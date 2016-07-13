@@ -14,7 +14,7 @@ namespace kernel32 {
 
 	void set_main_module(modules::module_info*);
 
-	void add_virtual_region(void* addr, size_t size, DWORD protect);
+	void add_virtual_region(void* addr, size_t size, DWORD state, PAGE_PROTECT protect);
 
 	extern std::string cmdline;
 }

@@ -1,10 +1,10 @@
 #include "environ.h"
 #include "wintypes.h"
 using namespace wintypes;
-
 #include "modules.h"
+#include "native_api.h"
 
-#include <stdint.h>
+#include <cstdint>
 #include <mutex>
 #include <deque>
 #include <atomic>
@@ -59,6 +59,10 @@ BOOL WINAPI GetVersionExA(OSVERSIONINFOA* lpVersionInfo) {
 	return TRUE;
 }
 
+DWORD WINAPI GetVersion() {
+	return 6 | (3 << 8) | (9200 << 16);
+}
+
 HMODULE WINAPI GetModuleHandleA(const char* name) {
 	auto* i = name ? modules::get_module_info(name) : tlb.main_module_info;
 	if (!i) {
@@ -92,7 +96,7 @@ void* WINAPI GetProcAddress(HMODULE hm, const char* name) {
 }
 
 HMODULE WINAPI LoadLibraryA(const char* name) {
-	auto* i = modules::load_library(name);
+	auto* i = modules::load_library(name, false);
 	if (!i) {
 		SetLastError(ERROR_FILE_NOT_FOUND);
 		return nullptr;
@@ -109,20 +113,22 @@ struct heap {
 std::list<heap> all_heaps;
 std::mutex heap_mut;
 
-struct heap_block_header {
+struct alignas(int64_t) heap_block_header {
 	size_t size;
 };
 
 HANDLE WINAPI HeapCreate(DWORD flags, size_t initial_size, size_t max_size) {
 	std::lock_guard<std::mutex> l(heap_mut);
 	all_heaps.push_back({ flags,initial_size,max_size });
-	log("HeapCreate %x %d %d\n", flags, initial_size, max_size);
+	//log("HeapCreate %x %d %d\n", flags, initial_size, max_size);
 	return &all_heaps.back();
 }
 
 void* WINAPI HeapAlloc(HANDLE hHeap, DWORD flags, size_t size) {
 	heap_block_header* h = (heap_block_header*)malloc(sizeof(heap_block_header) + size);
+	if (flags & 8) memset(h, 0, sizeof(heap_block_header) + size);
 	h->size = size;
+	//log("HeapAlloc -> %p\n", h + 1);
 	return h + 1;
 }
 
@@ -143,16 +149,16 @@ void WINAPI InitializeCriticalSection(CRITICAL_SECTION* cs) {
 	cs->LockCount = -1;
 	cs->RecursionCount = 0;
 	cs->OwningThread = nullptr;
-	cs->LockSemaphore = nullptr;
+	cs->LockSemaphore = new std::recursive_mutex();
 	cs->SpinCount = 0;
 }
 
-void WINAPI InitializeCriticalSectionAndSpinCount(CRITICAL_SECTION* cs, DWORD SpinCount) {
+ void WINAPI InitializeCriticalSectionAndSpinCount(CRITICAL_SECTION* cs, DWORD SpinCount) {
 	cs->DebugInfo = nullptr;
 	cs->LockCount = -1;
 	cs->RecursionCount = 0;
 	cs->OwningThread = nullptr;
-	cs->LockSemaphore = nullptr;
+	cs->LockSemaphore = new std::recursive_mutex();;
 	cs->SpinCount = SpinCount;
 }
 
@@ -161,15 +167,16 @@ void WINAPI DeleteCriticalSection(CRITICAL_SECTION* cs) {
 	cs->LockCount = 0;
 	cs->RecursionCount = 0;
 	cs->OwningThread = nullptr;
+	delete (std::recursive_mutex*)cs->LockSemaphore;
 	cs->LockSemaphore = nullptr;
 	cs->SpinCount = 0;
 }
 
 void WINAPI EnterCriticalSection(CRITICAL_SECTION* cs) {
-	log("fixme: EnterCriticalSection\n");
+	((std::recursive_mutex*)cs->LockSemaphore)->lock();
 }
 void WINAPI LeaveCriticalSection(CRITICAL_SECTION* cs) {
-	log("fixme: LeaveCriticalSection\n");
+	((std::recursive_mutex*)cs->LockSemaphore)->unlock();
 }
 
 struct local_storage {
@@ -227,8 +234,10 @@ local_storage fls;
 
 DWORD WINAPI FlsAlloc(void* callback) {
 	size_t index = fls.get_free_index();
+	if (index == 0xffffffff) return 0xffffffff;
 	fls[index].callback = callback;
 	fls[index].data = nullptr;
+	//log("FlsAlloc -> %d\n", index);
 	return index;
 }
 
@@ -247,14 +256,17 @@ BOOL WINAPI FlsSetValue(DWORD index, void* data) {
 		return FALSE;
 	}
 	fls[index].data = data;
+	//log("FlsSetValue %d -> %p\n", index, data);
 	return TRUE;
 }
 
 void* WINAPI FlsGetValue(DWORD index) {
 	if (index >= fls.next_index || !fls[index].busy) {
 		SetLastError(ERROR_INVALID_PARAMETER);
+		//log("FlsGetValue failed\n");
 		return nullptr;
 	}
+	//log("FlsGetValue %d -> %p\n", index, fls[index].data);
 	return fls[index].data;
 }
 
@@ -310,27 +322,55 @@ UINT WINAPI SetHandleCount(UINT) {
 	return std::numeric_limits<size_t>::max() / sizeof(io_handle);
 }
 
+struct page_attributes {
+	DWORD protect = 0;
+	DWORD state = 0;
+};
 
 struct virtual_region {
 	void* base;
 	size_t size;
-	DWORD protect;
+	std::vector<page_attributes> pages;
+	DWORD allocation_protect;
 };
 std::map<void*, virtual_region> virtual_regions;
 std::mutex virtual_mut;
 
-void add_virtual_region(void* addr, size_t size, DWORD protect) {
+void add_virtual_region_nolock(void* addr, size_t size, DWORD state, PAGE_PROTECT protect) {
+	if ((uintptr_t)addr & 0xfff) fatal_error("attempt to add virtual region not on page boundary");
 	size = (size + 0xfff) & ~0xfff;
+	log("add virtual region [%p, %p)\n", addr, (char*)addr + size);
+	auto i = virtual_regions.lower_bound(addr);
+	if (i != virtual_regions.begin()) {
+		auto pi = i;
+		--pi;
+		auto* pr = &pi->second;
+		if ((char*)pr->base + pr->size > addr) fatal_error("attempt to add an already mapped virtual region");
+	}
+	if (i != virtual_regions.end()) {
+		auto* nr = &i->second;
+		if ((char*)addr + size > nr->base) fatal_error("attempt to add an already mapped virtual region");
+	}
+	size_t pages = size / 0x1000;
+	auto it = virtual_regions.emplace(addr, virtual_region { addr, size, std::vector<page_attributes>(pages), protect });
+	for (auto& v : it.first->second.pages) {
+		v.protect = protect;
+		v.state = state;
+	}
+	//log("added virtual region [%p, %p)\n", addr, (char*)addr + size);
+}
+
+void add_virtual_region(void* addr, size_t size, DWORD state, PAGE_PROTECT protect) {
 	std::lock_guard<std::mutex> l(virtual_mut);
-	virtual_regions.emplace(addr, virtual_region { addr, size, protect });
-	log("added virtual region [%p, %p)\n", addr, (char*)addr + size);
+	add_virtual_region_nolock(addr, size, state, protect);
 }
 
 virtual_region* find_virtual_region(void* addr) {
-	auto i = virtual_regions.lower_bound(addr);
-	if (i == virtual_regions.end()) return nullptr;
+	auto i = virtual_regions.upper_bound(addr);
+	if (i == virtual_regions.begin()) return nullptr;
+	--i;
 	auto* r = &i->second;
-	if ((char*)r->base + r->size < addr) return nullptr;
+	if ((char*)r->base + r->size <= addr) return nullptr;
 	return r;
 }
 
@@ -341,14 +381,122 @@ SIZE_T WINAPI VirtualQuery(void* addr, MEMORY_BASIC_INFORMATION* buffer, size_t 
 		SetLastError(ERROR_INSUFFICIENT_BUFFER);
 		return 0;
 	}
-	buffer->BaseAddress = r->base;
+	uintptr_t offset = ((uintptr_t)addr - (uintptr_t)r->base) & ~0xfff;
+	size_t page = offset / 0x1000;
+	buffer->BaseAddress = (uint8_t*)r->base + offset;
 	buffer->AllocationBase = r->base;
-	buffer->AllocationProtect = r->protect;
-	buffer->RegionSize = r->size;
-	buffer->State = MEM_RESERVE | MEM_COMMIT;
-	buffer->Protect = r->protect;
+	buffer->AllocationProtect = r->allocation_protect;
+	buffer->RegionSize = 0x1000;
+	buffer->State = r->pages[page].state;
+	buffer->Protect = r->pages[page].protect;
 	buffer->Type = 0x20000;
 	return sizeof(*buffer);
+}
+
+native_api::memory_access access_from_protect(PAGE_PROTECT protect) {
+	if (protect & PAGE_READONLY) return native_api::memory_access::read;
+	else if (protect & PAGE_READWRITE) return native_api::memory_access::read_write;
+	else if (protect & PAGE_EXECUTE) return native_api::memory_access::read_execute;
+	else if (protect & PAGE_EXECUTE_READ) return native_api::memory_access::read_execute;
+	else if (protect & PAGE_EXECUTE_READWRITE) return native_api::memory_access::read_write_execute;
+	return native_api::memory_access::none;
+}
+
+void* WINAPI VirtualAlloc(void* addr, SIZE_T size, DWORD allocation_type, PAGE_PROTECT protect) {
+	if (protect == 0) {
+		SetLastError(ERROR_INVALID_ADDRESS);
+		log("VirtualAlloc failed\n");
+		return nullptr;
+	}
+	if (addr) {
+		if (allocation_type & MEM_RESERVE) {
+			SetLastError(ERROR_INVALID_ADDRESS);
+			log("VirtualAlloc failed\n");
+			return nullptr;
+		}
+	}
+	std::lock_guard<std::mutex> l(virtual_mut);
+	if (addr) {
+		auto* r = find_virtual_region(addr);
+		if (!r) {
+			SetLastError(ERROR_INVALID_ADDRESS);
+			log("VirtualAlloc failed\n");
+			return nullptr;
+		}
+		if (allocation_type & MEM_COMMIT) {
+			uintptr_t offset = ((uintptr_t)addr - (uintptr_t)r->base) & ~0xfff;
+			size_t page = offset / 0x1000;
+			size_t pages = (size + 0xfff) / 0x1000;
+			auto access = access_from_protect(protect);
+			for (size_t i = 0; i != pages; ++i) {
+				size_t p = page + i;
+				if (~r->pages[p].state & MEM_COMMIT) {
+					native_api::set_memory_access((uint8_t*)addr + p * 0x1000, 0x1000, access);
+					r->pages[p].state |= MEM_COMMIT;
+					r->pages[p].protect = protect;
+					log("committed a page\n");
+				}
+			}
+		}
+		return r->base;
+	}
+	if (~allocation_type & MEM_RESERVE) {
+		SetLastError(ERROR_INVALID_PARAMETER);
+		log("VirtualAlloc failed\n");
+		return nullptr;
+	}
+	native_api::allocated_memory mem;
+	native_api::memory_access access = native_api::memory_access::none;
+	if (allocation_type & MEM_COMMIT) {
+		access = access_from_protect(protect);
+	} else protect = PAGE_NOACCESS;
+	size = (size + 0xfff) & ~0xfff;
+	mem.allocate(size, access);
+	if (!mem) {
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		log("VirtualAlloc failed\n");
+		return nullptr;
+	}
+	void* ptr = mem.detach();
+	add_virtual_region_nolock(ptr, size, allocation_type, protect);
+	log("VirtualAlloc -> %p\n", ptr);
+	return ptr;
+}
+
+BOOL WINAPI VirtualFree(void* addr, SIZE_T size, DWORD free_type) {
+	std::lock_guard<std::mutex> l(virtual_mut);
+	auto* r = find_virtual_region(addr);
+	if (!r) {
+		SetLastError(ERROR_INVALID_ADDRESS);
+		return FALSE;
+	}
+	uintptr_t offset = ((uintptr_t)addr - (uintptr_t)r->base) & ~0xfff;
+	size_t page = offset / 0x1000;
+	size_t pages = (size + 0xfff) / 0x1000;
+	if (free_type == MEM_DECOMMIT) {
+		for (size_t i = 0; i != pages; ++i) {
+			size_t p = page + i;
+			if (r->pages[p].state & MEM_COMMIT) {
+				native_api::set_memory_access((uint8_t*)addr + p * 0x1000, 0x1000, native_api::memory_access::none);
+				r->pages[p].state &= MEM_COMMIT;
+				r->pages[p].protect = PAGE_NOACCESS;
+				log("decommitted a page\n");
+			}
+		}
+		return TRUE;
+	} else if (free_type == MEM_RELEASE) {
+		if (size || addr != r->base) {
+			SetLastError(ERROR_INVALID_PARAMETER);
+			return FALSE;
+		}
+		native_api::allocated_memory mem(r->base, r->size);
+		log("released [%p, %p)\n", r->base, (uint8_t*)r->base + r->size);
+		virtual_regions.erase(r->base);
+		return TRUE;
+	} else {
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return FALSE;
+	}
 }
 
 LONG WINAPI UnhandledExceptionFilter(EXCEPTION_POINTERS* info) {
@@ -394,7 +542,7 @@ UINT WINAPI GetACP() {
 	return 65001;
 }
 
-BOOL GetCPInfo(UINT code_page, CPINFO* info) {
+BOOL WINAPI GetCPInfo(UINT code_page, CPINFO* info) {
 	SetLastError(ERROR_INVALID_PARAMETER);
 	return FALSE;
 }
@@ -445,6 +593,7 @@ register_funcs funcs({
 	{ "kernel32:SetLastError", SetLastError },
 	{ "kernel32:GetLastError", GetLastError },
 	{ "kernel32:GetVersionExA", GetVersionExA },
+	{ "kernel32:GetVersion", GetVersion },
 	{ "kernel32:GetModuleHandleA", GetModuleHandleA },
 	{ "kernel32:GetProcAddress", GetProcAddress },
 	{ "kernel32:LoadLibraryA", LoadLibraryA },
@@ -468,6 +617,8 @@ register_funcs funcs({
 	{ "kernel32:GetFileType", GetFileType },
 	{ "kernel32:SetHandleCount", SetHandleCount },
 	{ "kernel32:VirtualQuery", VirtualQuery },
+	{ "kernel32:VirtualAlloc", VirtualAlloc },
+	{ "kernel32:VirtualFree", VirtualFree },
 	{ "kernel32:UnhandledExceptionFilter", UnhandledExceptionFilter },
 	{ "kernel32:SetUnhandledExceptionFilter", SetUnhandledExceptionFilter },
 	{ "kernel32:GetCommandLineA", GetCommandLineA },

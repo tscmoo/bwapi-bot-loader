@@ -32,10 +32,12 @@ namespace wintypes {
 	enum errors {
 		ERROR_SUCCESS = 0,
 		ERROR_FILE_NOT_FOUND = 2,
+		ERROR_NOT_ENOUGH_MEMORY = 8,
 		ERROR_INVALID_PARAMETER = 87,
 		ERROR_INSUFFICIENT_BUFFER = 122,
 		ERROR_MOD_NOT_FOUND = 126,
 		ERROR_PROC_NOT_FOUND = 127,
+		ERROR_INVALID_ADDRESS = 487,
 	};
 
 	enum PAGE_PROTECT : DWORD {
@@ -51,6 +53,11 @@ namespace wintypes {
 		MEM_COMMIT = 0x1000,
 		MEM_RESERVE = 0x2000,
 		MEM_FREE = 0x10000
+	};
+
+	enum FREE_TYPE : DWORD {
+		MEM_DECOMMIT = 0x4000,
+		MEM_RELEASE = 0x8000
 	};
 
 	struct IMAGE_DOS_HEADER {
@@ -211,6 +218,20 @@ namespace wintypes {
 		UINT MaxCharSize;
 		BYTE DefaultChar[2];
 		BYTE LeadByte[12];
+	};
+
+	struct IMAGE_EXPORT_DIRECTORY {
+		DWORD Characteristics;
+		DWORD TimeDateStamp;
+		WORD MajorVersion;
+		WORD MinorVersion;
+		DWORD Name;
+		DWORD Base;
+		DWORD NumberOfFunctions;
+		DWORD NumberOfNames;
+		DWORD AddressOfFunctions;
+		DWORD AddressOfNames;
+		DWORD AddressOfNameOrdinals;
 	};
 
 };

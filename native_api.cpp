@@ -21,6 +21,7 @@ void allocated_memory::allocate(size_t size, memory_access access) {
 	this->size = size;
 }
 void allocated_memory::deallocate() {
+	if (!ptr) return;
 	VirtualFree(ptr, 0, MEM_RELEASE);
 	ptr = nullptr;
 	size = 0;
@@ -43,11 +44,14 @@ file_io::file_io() {
 file_io::~file_io() {
 	if (h) CloseHandle(h);
 }
-bool file_io::open(const char* fn, file_access access) {
+bool file_io::open(const char* fn, file_access access, file_open_mode mode) {
 	DWORD desired_access = 0;
 	if (access == file_access::read) desired_access = GENERIC_READ;
 	else if (access == file_access::read_write) desired_access = GENERIC_READ | GENERIC_WRITE;
-	h = CreateFileA(fn, desired_access, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+	DWORD creation_disposition = OPEN_EXISTING;
+	if (mode == file_open_mode::open_existing) creation_disposition = OPEN_EXISTING;
+	if (mode == file_open_mode::create_new) creation_disposition = CREATE_NEW;
+	h = CreateFileA(fn, desired_access, FILE_SHARE_READ, nullptr, creation_disposition, 0, nullptr);
 	return h != INVALID_HANDLE_VALUE;
 }
 bool file_io::read(void* buffer, size_t size) {

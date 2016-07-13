@@ -27,6 +27,9 @@
     <ClCompile Include="native_api.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="advapi32.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="wintypes.h">

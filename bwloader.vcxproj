@@ -84,6 +84,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="advapi32.cpp" />
     <ClCompile Include="kernel32.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="modules.cpp" />

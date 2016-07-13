@@ -42,12 +42,17 @@ namespace native_api {
 		read_write
 	};
 
+	enum class file_open_mode {
+		open_existing,
+		create_new
+	};
+
 	class file_io {
 		void* h;
 	public:
 		file_io();
 		~file_io();
-		bool open(const char* fn, file_access access);
+		bool open(const char* fn, file_access access, file_open_mode mode);
 		bool read(void* buffer, size_t size);
 		void set_pos(uint64_t pos);
 		uint64_t get_pos();

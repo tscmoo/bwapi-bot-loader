@@ -90,14 +90,12 @@ int main() {
 		return -1;
 	}
 
-	std::string module_filename = R"(X:\starcraft\starcraft\starcraft.exe)";
+	std::string module_filename = "starcraft.exe";
 
 	kernel32::cmdline = module_filename;
 
 	auto* i = modules::load(module_filename.c_str(), true);
 	if (!i) fatal_error("failed to load %s", module_filename);
-	//pe_info pi;
-	//if (!load(module_filename.c_str(), &pi, true)) fatal_error("failed to load %s", module_filename);
 
 	((void(*)())i->entry)();
 
