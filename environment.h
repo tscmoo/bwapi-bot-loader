@@ -4,8 +4,15 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <functional>
 
 #include "strf.h"
+
+#ifdef _MSC_VER
+#define WINAPI __stdcall
+#else
+#define WINAPI __attribute__((stdcall))
+#endif
 
 template<typename...T>
 static std::string format(const char* fmt, T&&...args) {
@@ -14,10 +21,14 @@ static std::string format(const char* fmt, T&&...args) {
 	return r;
 }
 
+namespace kernel32 {
+	uint32_t WINAPI GetCurrentThreadId();
+};
 template<typename...T>
 static void log(const char* fmt, T&&...args) {
 	auto s = format(fmt, std::forward<T>(args)...);
-	fwrite(s.data(), s.size(), 1, stdout);
+	auto s2 = format("%04x: %s", kernel32::GetCurrentThreadId(), s);
+	fwrite(s2.data(), s2.size(), 1, stdout);
 }
 
 template<typename...T>
@@ -25,12 +36,6 @@ static void fatal_error(const char* fmt, T&&... args) {
 	log("fatal error: %s\n", format(fmt, std::forward<T>(args)...));
 	std::quick_exit(-1);
 }
-
-#ifdef _MSC_VER
-#define WINAPI __stdcall
-#else
-#define WINAPI __attribute__((stdcall))
-#endif
 
 struct func_ptr {
 	void* raw_ptr_value;
@@ -56,6 +61,11 @@ struct register_funcs {
 		}
 	}
 };
+
+namespace environment {
+	void init();
+	void enter_thread(const std::function<void()>& f);
+}
 
 template<typename T1, typename T2>
 static bool str_icase_eq(const T1& str1, const T2& str2) {
@@ -103,7 +113,7 @@ static std::string path_to_native(const std::string& path) {
 }
 
 static std::string get_full_path(const std::string& path) {
-	return full_path(path, '\\');
+	return "Z:\\" + full_path(path, '\\');
 }
 static std::string get_filename(const std::string& path) {
 	auto s = full_path(path, '\\');

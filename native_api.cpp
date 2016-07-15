@@ -1,5 +1,5 @@
 #include "native_api.h"
-#include "environ.h"
+#include "environment.h"
 
 #include <cstdint>
 
@@ -9,7 +9,7 @@
 namespace native_api {
 ;
 
-void allocated_memory::allocate(size_t size, memory_access access) {
+void allocated_memory::allocate(void* addr, size_t size, memory_access access) {
 	if (ptr) deallocate();
 	DWORD protect = 0;
 	if (access == memory_access::none) protect = PAGE_NOACCESS;
@@ -17,8 +17,12 @@ void allocated_memory::allocate(size_t size, memory_access access) {
 	else if (access == memory_access::read_write) protect = PAGE_READWRITE;
 	else if (access == memory_access::read_execute) protect = PAGE_EXECUTE_READ;
 	else if (access == memory_access::read_write_execute) protect = PAGE_EXECUTE_READWRITE;
-	ptr = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, protect);
-	this->size = size;
+	ptr = VirtualAlloc(addr, size, MEM_RESERVE | MEM_COMMIT, protect);
+	if (ptr && addr && ptr != addr) {
+		VirtualFree(ptr, 0, MEM_RELEASE);
+		ptr = nullptr;
+	}
+	this->size = ptr ? size : 0;
 }
 void allocated_memory::deallocate() {
 	if (!ptr) return;
@@ -78,7 +82,7 @@ uint64_t file_io::get_pos() {
 namespace native_api {
 ;
 
-void allocated_memory::allocate(size_t size, memory_access access) {
+void allocated_memory::allocate(void* addr, size_t size, memory_access access) {
 	if (ptr) deallocate();
 	int protect = 0;
 	if (access == memory_access::none) protect = PROT_NONE;
@@ -86,10 +90,15 @@ void allocated_memory::allocate(size_t size, memory_access access) {
 	else if (access == memory_access::read_write) protect = PROT_READ | PROT_WRITE;
 	else if (access == memory_access::read_execute) protect = PROT_READ | PROT_EXEC;
 	else if (access == memory_access::read_write_execute) protect = PROT_READ | PROT_WRITE | PROT_EXEC;
-	ptr = mmap(nullptr, size, protect, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	this->size = size;
+	ptr = mmap(addr, size, protect, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (ptr && addr && ptr != addr) {
+		munmap(ptr, size);
+		ptr = nullptr;
+	}
+	this->size = ptr ? size : 0;
 }
 void allocated_memory::deallocate() {
+	if (!ptr) return;
 	munmap(ptr, size);
 	ptr = nullptr;
 	size = 0;
@@ -111,7 +120,7 @@ file_io::file_io() {
 file_io::~file_io() {
 	if (h) fclose((FILE*)h);
 }
-bool file_io::open(const char* fn, file_access access) {
+bool file_io::open(const char* fn, file_access access, file_open_mode mode) {
 	const char* open_mode = "r";
 	if (access == file_access::read) open_mode = "rb";
 	else if (access == file_access::read_write) open_mode = "wb";

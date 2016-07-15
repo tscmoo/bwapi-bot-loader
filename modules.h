@@ -3,8 +3,21 @@
 
 #include <string>
 #include <unordered_map>
+#include <vector>
+#include <list>
 
 namespace modules {
+
+	struct resource_directory;
+	struct resource_entry {
+		resource_directory* dir = nullptr;
+		void* data = nullptr;
+		size_t size;
+	};
+	struct resource_directory {
+		std::unordered_map<std::u16string, resource_entry> named;
+		std::unordered_map<size_t, resource_entry> id;
+	};
 
 	struct module_info {
 		std::string full_path;
@@ -16,6 +29,9 @@ namespace modules {
 		std::unordered_map<std::string, size_t> export_names;
 		std::vector<void*> exports;
 		size_t ordinal_base = 0;
+
+		resource_directory* root_resource_directory = nullptr;
+		std::list<resource_directory> all_resource_directories;
 	};
 
 	module_info* get_module_info(const char* name);
@@ -23,8 +39,11 @@ namespace modules {
 
 	module_info* load_library(const char* path, bool is_load_time);
 
-	module_info* load(const char* path, bool overwrite = false);
+	module_info* load_main(const char* path, bool overwrite = false);
 	module_info* load_fake_module(const char* name);
+
+	void call_thread_attach();
+	void call_thread_detach();
 
 };
 

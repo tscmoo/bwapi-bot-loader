@@ -58,7 +58,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <BaseAddress>0x300000</BaseAddress>
+      <BaseAddress>0x2c0000</BaseAddress>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <FixedBaseAddress>true</FixedBaseAddress>
     </Link>
@@ -85,13 +85,17 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="advapi32.cpp" />
+    <ClCompile Include="environment.cpp" />
     <ClCompile Include="kernel32.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="modules.cpp" />
     <ClCompile Include="native_api.cpp" />
+    <ClCompile Include="user32.cpp" />
+    <ClCompile Include="version.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="environ.h" />
+    <ClInclude Include="environment.h" />
+    <ClInclude Include="headless.h" />
     <ClInclude Include="kernel32.h" />
     <ClInclude Include="modules.h" />
     <ClInclude Include="native_api.h" />

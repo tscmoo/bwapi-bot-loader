@@ -30,12 +30,18 @@
     <ClCompile Include="advapi32.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="environment.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="user32.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="version.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="wintypes.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="environ.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="modules.h">
@@ -48,6 +54,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="strf.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="headless.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="environment.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

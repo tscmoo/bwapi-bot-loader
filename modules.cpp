@@ -1,6 +1,6 @@
 
 #include "modules.h"
-#include "environ.h"
+#include "environment.h"
 #include "native_api.h"
 #include "wintypes.h"
 using namespace wintypes;
@@ -39,6 +39,15 @@ module_info* get_module_info(void* base) {
 	return nullptr;
 }
 
+struct virtual_memory_handle {
+	void* ptr = nullptr;
+	~virtual_memory_handle() {
+		if (ptr) kernel32::virtual_deallocate(ptr);
+	}
+};
+
+void* const modules_start_addr = (void*)((uintptr_t)16 * 1024 * 1024);
+
 module_info* load_module(const char* path, bool overwrite) {
 
 	auto native_path = path_to_native(path);
@@ -49,7 +58,7 @@ module_info* load_module(const char* path, bool overwrite) {
 		return nullptr;
 	}
 
-	native_api::allocated_memory addr_handle;
+	virtual_memory_handle addr_handle;
 	void* addr = nullptr;
 
 	auto get = [&](void* dst, size_t size) -> bool {
@@ -95,7 +104,7 @@ module_info* load_module(const char* path, bool overwrite) {
 			}
 		}
 	} else {
-		addr_handle.allocate(image_size, native_api::memory_access::read_write_execute);
+		addr_handle.ptr = kernel32::virtual_allocate(nullptr, image_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE, modules_start_addr);
 		addr = addr_handle.ptr;
 	}
 	if (!addr) return nullptr;
@@ -152,7 +161,8 @@ module_info* load_module(const char* path, bool overwrite) {
 		r->base = addr;
 		r->entry = 0;
 
-		kernel32::add_virtual_region(addr, image_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+		if (!addr_handle.ptr) kernel32::add_virtual_region(addr, image_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+		else addr_handle.ptr = nullptr;
 
 		if (loaded_modules.size() == 1) kernel32::set_main_module(r);
 
@@ -164,19 +174,19 @@ module_info* load_module(const char* path, bool overwrite) {
 	auto& exp_entry = oh.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
 
 	if (exp_entry.VirtualAddress) {
-		IMAGE_EXPORT_DIRECTORY* export = (IMAGE_EXPORT_DIRECTORY*)((uint8_t*)addr + exp_entry.VirtualAddress);
+		IMAGE_EXPORT_DIRECTORY* exportd = (IMAGE_EXPORT_DIRECTORY*)((uint8_t*)addr + exp_entry.VirtualAddress);
 
-		r->ordinal_base = export->Base;
+		r->ordinal_base = exportd->Base;
 
-		DWORD* funcs = (DWORD*)((uint8_t*)addr + export->AddressOfFunctions);
-		DWORD* names = (DWORD*)((uint8_t*)addr + export->AddressOfNames);
-		DWORD* name_ordinals = (DWORD*)((uint8_t*)addr + export->AddressOfNameOrdinals);
+		DWORD* funcs = (DWORD*)((uint8_t*)addr + exportd->AddressOfFunctions);
+		DWORD* names = (DWORD*)((uint8_t*)addr + exportd->AddressOfNames);
+		DWORD* name_ordinals = (DWORD*)((uint8_t*)addr + exportd->AddressOfNameOrdinals);
 
-		for (size_t i = 0; i < export->NumberOfFunctions; ++i) {
+		for (size_t i = 0; i < exportd->NumberOfFunctions; ++i) {
 			if (funcs[i]) r->exports.push_back((uint8_t*)addr + funcs[i]);
 			else r->exports.push_back(nullptr);
 		}
-		for (size_t i = 0; i < export->NumberOfNames; ++i) {
+		for (size_t i = 0; i < exportd->NumberOfNames; ++i) {
 			log("export name '%s'\n", (char*)(uint8_t*)addr + names[i]);
 			r->export_names[(char*)(uint8_t*)addr + names[i]] = name_ordinals[i];
 		}
@@ -214,7 +224,7 @@ module_info* load_module(const char* path, bool overwrite) {
 				if (*dw & 0x80000000) {
 					size_t ordinal = (*dw & 0xffff) - mi->ordinal_base;
 					if (ordinal < mi->exports.size()) {
-						log("imported ordinal %d from %s\n", ordinal + mi->ordinal_base, mi->name);
+						//log("imported ordinal %d from %s\n", ordinal + mi->ordinal_base, mi->name);
 						proc = mi->exports[ordinal];
 					}
 				}
@@ -226,17 +236,47 @@ module_info* load_module(const char* path, bool overwrite) {
 		pos += sizeof(IMAGE_IMPORT_DESCRIPTOR);
 	}
 
-	// 	if (*dw & 0x80000000) {
-	// 		DWORD* funcs = (DWORD*)((char*)hm + export->AddressOfFunctions);
-	// 		DWORD index = (*dw & 0xffff) - export->Base;
-	// 		if (index < export->NumberOfFunctions) proc = (FARPROC)((char*)hm + funcs[index]);
-	// 		else proc = nullptr;
-	// 	} else {
-	// 		log("fixme: load name\n");
-	// 		proc = nullptr;
-	// 	}
-
-	if (addr_handle) addr_handle.detach();
+	auto IMAGE_DIRECTORY_ENTRY_RESOURCE = 2;
+	// resources
+	uint8_t* res_start = (uint8_t*)addr + oh.DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress;
+	std::function<resource_directory*(IMAGE_RESOURCE_DIRECTORY*)> resdir = [&](IMAGE_RESOURCE_DIRECTORY* dir) {
+		r->all_resource_directories.emplace_back();
+		resource_directory* d = &r->all_resource_directories.back();
+		IMAGE_RESOURCE_DIRECTORY_ENTRY* e = (IMAGE_RESOURCE_DIRECTORY_ENTRY*)(dir + 1);
+		for (size_t i = 0; i < dir->NumberOfNamedEntries; ++i, ++e) {
+			if (e->Name & 0x80000000) {
+				size_t offset = e->Name & 0x7fffffff;
+				uint8_t* p = res_start + offset;
+				WORD len = *(WORD*)p;
+				std::u16string name((char16_t*)(p + 2), len);
+				if (e->OffsetToData & 0x80000000) {
+					d->named[std::move(name)].dir = resdir((IMAGE_RESOURCE_DIRECTORY*)(res_start + (e->OffsetToData & 0x7fffffff)));
+				} else {
+					IMAGE_RESOURCE_DATA_ENTRY* de = (IMAGE_RESOURCE_DATA_ENTRY*)(res_start + e->OffsetToData);
+					auto& v = d->named[std::move(name)];
+					v.data = res_start + de->OffsetToData;
+					v.size = de->Size;
+				}
+			}
+		}
+		for (size_t i = 0; i < dir->NumberOfIdEntries; ++i, ++e) {
+			if (~e->Name & 0x80000000) {
+				size_t id = e->Name & 0xffff;
+				if (e->OffsetToData & 0x80000000) {
+					d->id[id].dir = resdir((IMAGE_RESOURCE_DIRECTORY*)(res_start + (e->OffsetToData & 0x7fffffff)));
+				} else {
+					IMAGE_RESOURCE_DATA_ENTRY* de = (IMAGE_RESOURCE_DATA_ENTRY*)(res_start + e->OffsetToData);
+					auto& v = d->id[id];
+					v.data = res_start + de->OffsetToData;
+					v.size = de->Size;
+				}
+			}
+		}
+		return d;
+	};
+	if (oh.DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress) {
+		r->root_resource_directory = resdir((IMAGE_RESOURCE_DIRECTORY*)res_start);
+	}
 
 	if (oh.AddressOfEntryPoint) {
 		r->entry = (uint8_t*)addr + oh.AddressOfEntryPoint;
@@ -259,7 +299,10 @@ module_info* load_library(const char* path, bool is_load_time) {
 	if (i->entry) {
 		if (!is_load_time) {
 			log("calling entry point for %p\n", i->base);
-			BOOL r = ((BOOL(WINAPI*)(void*, DWORD, int))i->entry)(i->base, 1, is_load_time ? 1 : 0);
+			void* entry = i->entry;
+			void* base = i->base;
+			int load_time = is_load_time ? 1 : 0;
+			BOOL r = ((BOOL(WINAPI*)(void*, DWORD, int))entry)(base, 1, load_time);
 			log("entry point for %p returned\n", i->base);
 			if (!r) fatal_error("DllEntryPoint for '%s' failed", i->full_path);
 		} else {
@@ -269,7 +312,10 @@ module_info* load_library(const char* path, bool is_load_time) {
 	if (!was_loading) {
 		for (auto& v : dll_entries_to_call) {
 			log("calling entry point for %p\n", v.first->base);
-			BOOL r = ((BOOL(WINAPI*)(void*, DWORD, int))v.first->entry)(v.first->base, 1, v.second ? 1 : 0);
+			void* entry = v.first->entry;
+			void* base = v.first->base;
+			int load_time = v.second ? 1 : 0;
+			BOOL r = ((BOOL(WINAPI*)(void*, DWORD, int))entry)(base, 1, load_time);
 			log("entry point for %p returned\n", v.first->base);
 			if (!r) fatal_error("DllEntryPoint for '%s' failed", v.first->full_path);
 		}
@@ -278,19 +324,31 @@ module_info* load_library(const char* path, bool is_load_time) {
 	return i;
 }
 
-module_info* load(const char* path, bool overwrite) {
-	std::lock_guard<std::recursive_mutex> l(load_mut);
-	bool was_loading = is_loading;
-	if (!was_loading) is_loading = true;
-	auto* i = load_module(path, overwrite);
-	if (!was_loading) {
-		for (auto& v : dll_entries_to_call) {
-			log("calling entry point for %p\n", v.first->base);
-			BOOL r = ((BOOL(WINAPI*)(void*, DWORD, int))v.first->entry)(v.first->base, 1, v.second ? 1 : 0);
-			log("entry point for %p returned\n", v.first->base);
-			if (!r) fatal_error("DllEntryPoint for '%s' failed", v.first->full_path);
-		}
+module_info* load_main(const char* path, bool overwrite) {
+	module_info* i = nullptr;
+	std::list<std::pair<module_info*, bool>> dll_entries;
+	{
+		std::lock_guard<std::recursive_mutex> l(load_mut);
+		if (is_loading) fatal_error("load: is_loading");
+		is_loading = true;
+		i = load_module(path, overwrite);
+		dll_entries = std::move(dll_entries_to_call);
+		dll_entries_to_call.clear();
 		is_loading = false;
+	}
+	if (i) {
+		environment::enter_thread([&]() {
+			for (auto& v : dll_entries) {
+				log("calling entry point for %p\n", v.first->base);
+				void* entry = v.first->entry;
+				void* base = v.first->base;
+				int load_time = v.second ? 1 : 0;
+				BOOL r = ((BOOL(WINAPI*)(void*, DWORD, int))entry)(base, 1, load_time);
+				log("entry point for %p returned\n", v.first->base);
+				if (!r) fatal_error("DllEntryPoint for '%s' failed", v.first->full_path);
+			}
+			((void(*)())i->entry)();
+		});
 	}
 	return i;
 }
@@ -299,9 +357,9 @@ module_info* load_fake_module(const char* name) {
 	loaded_modules.emplace_back();
 	auto* r = &loaded_modules.back();
 
-	native_api::allocated_memory addr_handle;
-	addr_handle.allocate(0x1000, native_api::memory_access::none);
-	if (!addr_handle) fatal_error("failed to allocate memory for fake module");
+	virtual_memory_handle addr_handle;
+	addr_handle.ptr = kernel32::virtual_allocate(nullptr, 0x10000, MEM_RESERVE, PAGE_NOACCESS, modules_start_addr);
+	if (!addr_handle.ptr) fatal_error("failed to allocate memory for fake module");
 
 	r->name = name;
 	r->name_no_ext = name;
@@ -311,14 +369,47 @@ module_info* load_fake_module(const char* name) {
 	for (char& c : r->lcase_name_no_ext) {
 		if (c >= 'A' && c <= 'Z') c |= 0x20;
 	}
-	r->base = addr_handle.detach();
+	r->base = addr_handle.ptr;
 	r->entry = 0;
 
-	kernel32::add_virtual_region(r->base, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_NOACCESS);
+	addr_handle.ptr = nullptr;
 
 	log("loaded fake module '%s' at %p\n", name, r->base);
 
 	return r;
+}
+
+void call_thread_attach() {
+	std::vector<module_info*> dlls;
+	{
+		std::lock_guard<std::mutex> l(loaded_modules_mutex);
+		for (auto& v : loaded_modules) {
+			if (&v == &loaded_modules.front()) continue;
+			dlls.push_back(&v);
+		}
+	}
+	for (auto& v : dlls) {
+		if (v->entry) {
+			log("calling DLL_THREAD_ATTACH for %p\n", v->base);
+			((BOOL(WINAPI*)(void*, DWORD, int))v->entry)(v->base, 2, 0);
+		}
+	}
+}
+void call_thread_detach() {
+	std::vector<module_info*> dlls;
+	{
+		std::lock_guard<std::mutex> l(loaded_modules_mutex);
+		for (auto& v : loaded_modules) {
+			if (&v == &loaded_modules.front()) continue;
+			dlls.push_back(&v);
+		}
+	}
+	for (auto& v : dlls) {
+		if (v->entry) {
+			log("calling DLL_THREAD_DETACH for %p\n", v->base);
+			((BOOL(WINAPI*)(void*, DWORD, int))v->entry)(v->base, 3, 0);
+		}
+	}
 }
 
 }

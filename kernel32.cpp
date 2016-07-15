@@ -1,4 +1,4 @@
-#include "environ.h"
+#include "environment.h"
 #include "wintypes.h"
 using namespace wintypes;
 #include "modules.h"
@@ -13,6 +13,8 @@ using namespace wintypes;
 #include <vector>
 #include <chrono>
 #include <ctime>
+#include <thread>
+#include <algorithm>
 
 namespace kernel32 {
 ;
@@ -25,10 +27,6 @@ struct TLB {
 
 thread_local TLB tlb;
 
-void set_main_module(modules::module_info* i) {
-	tlb.main_module_info = i;
-	tlb.thread_id = 1;
-}
 
 DWORD WINAPI GetLastError() {
 	return tlb.last_error;
@@ -335,6 +333,7 @@ struct virtual_region {
 };
 std::map<void*, virtual_region> virtual_regions;
 std::mutex virtual_mut;
+size_t vm_total_allocated = 0;
 
 void add_virtual_region_nolock(void* addr, size_t size, DWORD state, PAGE_PROTECT protect) {
 	if ((uintptr_t)addr & 0xfff) fatal_error("attempt to add virtual region not on page boundary");
@@ -357,12 +356,24 @@ void add_virtual_region_nolock(void* addr, size_t size, DWORD state, PAGE_PROTEC
 		v.protect = protect;
 		v.state = state;
 	}
+	vm_total_allocated += size;
 	//log("added virtual region [%p, %p)\n", addr, (char*)addr + size);
 }
 
 void add_virtual_region(void* addr, size_t size, DWORD state, PAGE_PROTECT protect) {
 	std::lock_guard<std::mutex> l(virtual_mut);
 	add_virtual_region_nolock(addr, size, state, protect);
+}
+
+void remove_virtual_region_nolock(void* addr) {
+	auto i = virtual_regions.find(addr);
+	vm_total_allocated -= i->second.size;
+	virtual_regions.erase(i);
+}
+
+void remove_virtual_region(void* addr) {
+	std::lock_guard<std::mutex> l(virtual_mut);
+	remove_virtual_region_nolock(addr);
 }
 
 virtual_region* find_virtual_region(void* addr) {
@@ -374,7 +385,130 @@ virtual_region* find_virtual_region(void* addr) {
 	return r;
 }
 
+native_api::memory_access access_from_protect(PAGE_PROTECT protect) {
+	if (protect & PAGE_READONLY) return native_api::memory_access::read;
+	else if (protect & PAGE_READWRITE) return native_api::memory_access::read_write;
+	else if (protect & PAGE_EXECUTE) return native_api::memory_access::read_execute;
+	else if (protect & PAGE_EXECUTE_READ) return native_api::memory_access::read_execute;
+	else if (protect & PAGE_EXECUTE_READWRITE) return native_api::memory_access::read_write_execute;
+	return native_api::memory_access::none;
+}
+
+const uintptr_t vm_begin_addr = (uintptr_t)64 * 1024 * 1024;
+const uintptr_t vm_end_addr = (uintptr_t)2048 * 1024 * 1024;
+const uintptr_t vm_search_granularity = (uintptr_t)1024 * 1024;
+const uintptr_t vm_allocation_granularity = (uintptr_t)64 * 1024;
+
+uintptr_t next_addr = vm_begin_addr;
+
+void* virtual_allocate_nolock(void* addr, size_t size, DWORD allocation_type, PAGE_PROTECT protect, void* preferred_addr) {
+	native_api::allocated_memory mem;
+	native_api::memory_access access = native_api::memory_access::none;
+	if (allocation_type & MEM_COMMIT) {
+		access = access_from_protect(protect);
+	} else protect = PAGE_NOACCESS;
+	size = (size + 0xfff) & ~0xfff;
+	if (addr) {
+		mem.allocate(addr, size, access);
+	} else {
+		auto next_allocation_granularity = [&](uintptr_t ptr) {
+			return (ptr + vm_allocation_granularity - 1) & ~(vm_allocation_granularity - 1);
+		};
+		auto trymap = [&](uintptr_t begin, uintptr_t end) {
+			log("trying to map in range [%p, %p)\n", (void*)begin, (void*)end);
+			begin = next_allocation_granularity(begin);
+			mem.allocate((void*)begin, size, access);
+			if (mem) return true;
+			auto next = next_allocation_granularity(begin + size);
+			if (next != begin) {
+				mem.allocate((void*)next, size, access);
+				if (mem) return true;
+			}
+			next += vm_allocation_granularity;
+			for (uintptr_t i = (begin + size + vm_search_granularity - 1)&~(vm_search_granularity - 1); i < end; i += vm_search_granularity) {
+				mem.allocate((void*)i, size, access);
+				if (mem) return true;
+			}
+			return false;
+		};
+		auto search = [&](uintptr_t begin, uintptr_t end) {
+			log("search %p %p\n", (void*)begin, (void*)end);
+			auto i = virtual_regions.upper_bound((void*)begin);
+			if (i != virtual_regions.begin()) {
+				--i;
+				uintptr_t ie = (uintptr_t)i->first + i->second.size;
+				if (ie > begin) begin = ie;
+				++i;
+			}
+			uintptr_t taddr = begin;
+			while (i != virtual_regions.end()) {
+				uintptr_t ib = (uintptr_t)i->first;
+				if (taddr + size <= ib && trymap(taddr, ib)) {
+					return;
+				}
+				taddr = ib + i->second.size;
+				++i;
+			}
+			trymap(taddr, end);
+		};
+		if (preferred_addr) {
+			search((uintptr_t)preferred_addr, vm_end_addr);
+			if (!mem) search(vm_begin_addr, (uintptr_t)preferred_addr);
+		} else {
+			search(next_addr, vm_end_addr);
+			if (!mem) search(vm_begin_addr, next_addr);
+			if (mem) next_addr = (uintptr_t)mem.ptr + size;
+		}
+		//fatal_error("stop");
+	}
+	if (!mem) return nullptr;
+	void* ptr = mem.detach();
+	add_virtual_region_nolock(ptr, size, allocation_type, protect);
+	log("virtual allocate -> %p\n", ptr);
+	log("virtual regions -\n");
+	for (auto& v : virtual_regions) {
+		log(" [%p, %p)\n", v.second.base, (uint8_t*)v.second.base + v.second.size);
+	}
+	return ptr;
+}
+void virtual_deallocate_nolock(virtual_region* r) {
+	native_api::allocated_memory mem(r->base, r->size);
+	log("released [%p, %p)\n", r->base, (uint8_t*)r->base + r->size);
+	remove_virtual_region_nolock(r->base);
+}
+
+void* virtual_allocate(void* addr, size_t size, DWORD allocation_type, PAGE_PROTECT protect, void* preferred_addr) {
+	std::lock_guard<std::mutex> l(virtual_mut);
+	return virtual_allocate_nolock(addr, size, allocation_type, protect, preferred_addr);
+}
+void virtual_deallocate(void* addr) {
+	std::lock_guard<std::mutex> l(virtual_mut);
+	auto* r = find_virtual_region(addr);
+	if (!r) fatal_error("attempt to free non-existing virtual region at %p\n", addr);
+	return virtual_deallocate_nolock(r);
+}
+
+void virtual_protect_nolock(virtual_region* r, size_t page_begin, size_t page_end, PAGE_PROTECT protect) {
+	auto access = access_from_protect(protect);
+	for (size_t p = page_begin; p != page_end; ++p) {
+		if (r->pages[p].state & MEM_COMMIT && ~r->pages[p].protect != protect) {
+			native_api::set_memory_access((uint8_t*)r->base + p * 0x1000, 0x1000, access);
+			r->pages[p].protect = protect;
+		}
+	}
+}
+
+void virtual_protect(void* addr, size_t size, PAGE_PROTECT protect) {
+	auto* r = find_virtual_region(addr);
+	if (!r) fatal_error("virtual_protect: no region at %p", addr);
+	uintptr_t offset = ((uintptr_t)addr - (uintptr_t)r->base) & ~0xfff;
+	size_t page = offset / 0x1000;
+	size_t pages = (size + 0xfff) / 0x1000;
+	virtual_protect_nolock(r, page, page + pages, protect);
+}
+
 SIZE_T WINAPI VirtualQuery(void* addr, MEMORY_BASIC_INFORMATION* buffer, size_t buffer_size) {
+	log("VirtualQuery %p\n", addr);
 	std::lock_guard<std::mutex> l(virtual_mut);
 	auto* r = find_virtual_region(addr);
 	if (buffer_size < sizeof(MEMORY_BASIC_INFORMATION)) {
@@ -393,16 +527,8 @@ SIZE_T WINAPI VirtualQuery(void* addr, MEMORY_BASIC_INFORMATION* buffer, size_t 
 	return sizeof(*buffer);
 }
 
-native_api::memory_access access_from_protect(PAGE_PROTECT protect) {
-	if (protect & PAGE_READONLY) return native_api::memory_access::read;
-	else if (protect & PAGE_READWRITE) return native_api::memory_access::read_write;
-	else if (protect & PAGE_EXECUTE) return native_api::memory_access::read_execute;
-	else if (protect & PAGE_EXECUTE_READ) return native_api::memory_access::read_execute;
-	else if (protect & PAGE_EXECUTE_READWRITE) return native_api::memory_access::read_write_execute;
-	return native_api::memory_access::none;
-}
-
 void* WINAPI VirtualAlloc(void* addr, SIZE_T size, DWORD allocation_type, PAGE_PROTECT protect) {
+	log("VirtualAlloc %p size %#x, type %#08x protect %#08x\n", addr, size, allocation_type, (DWORD)protect);
 	if (protect == 0) {
 		SetLastError(ERROR_INVALID_ADDRESS);
 		log("VirtualAlloc failed\n");
@@ -430,8 +556,9 @@ void* WINAPI VirtualAlloc(void* addr, SIZE_T size, DWORD allocation_type, PAGE_P
 			auto access = access_from_protect(protect);
 			for (size_t i = 0; i != pages; ++i) {
 				size_t p = page + i;
+
 				if (~r->pages[p].state & MEM_COMMIT) {
-					native_api::set_memory_access((uint8_t*)addr + p * 0x1000, 0x1000, access);
+					native_api::set_memory_access((uint8_t*)r->base + p * 0x1000, 0x1000, access);
 					r->pages[p].state |= MEM_COMMIT;
 					r->pages[p].protect = protect;
 					log("committed a page\n");
@@ -445,21 +572,12 @@ void* WINAPI VirtualAlloc(void* addr, SIZE_T size, DWORD allocation_type, PAGE_P
 		log("VirtualAlloc failed\n");
 		return nullptr;
 	}
-	native_api::allocated_memory mem;
-	native_api::memory_access access = native_api::memory_access::none;
-	if (allocation_type & MEM_COMMIT) {
-		access = access_from_protect(protect);
-	} else protect = PAGE_NOACCESS;
-	size = (size + 0xfff) & ~0xfff;
-	mem.allocate(size, access);
-	if (!mem) {
+	void* ptr = virtual_allocate_nolock(addr, size, allocation_type, protect, nullptr);
+	if (!ptr) {
 		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
 		log("VirtualAlloc failed\n");
 		return nullptr;
 	}
-	void* ptr = mem.detach();
-	add_virtual_region_nolock(ptr, size, allocation_type, protect);
-	log("VirtualAlloc -> %p\n", ptr);
 	return ptr;
 }
 
@@ -477,7 +595,7 @@ BOOL WINAPI VirtualFree(void* addr, SIZE_T size, DWORD free_type) {
 		for (size_t i = 0; i != pages; ++i) {
 			size_t p = page + i;
 			if (r->pages[p].state & MEM_COMMIT) {
-				native_api::set_memory_access((uint8_t*)addr + p * 0x1000, 0x1000, native_api::memory_access::none);
+				native_api::set_memory_access((uint8_t*)r->base + p * 0x1000, 0x1000, native_api::memory_access::none);
 				r->pages[p].state &= MEM_COMMIT;
 				r->pages[p].protect = PAGE_NOACCESS;
 				log("decommitted a page\n");
@@ -489,9 +607,7 @@ BOOL WINAPI VirtualFree(void* addr, SIZE_T size, DWORD free_type) {
 			SetLastError(ERROR_INVALID_PARAMETER);
 			return FALSE;
 		}
-		native_api::allocated_memory mem(r->base, r->size);
-		log("released [%p, %p)\n", r->base, (uint8_t*)r->base + r->size);
-		virtual_regions.erase(r->base);
+		virtual_deallocate_nolock(r);
 		return TRUE;
 	} else {
 		SetLastError(ERROR_INVALID_PARAMETER);
@@ -573,7 +689,59 @@ BOOL WINAPI QueryPerformanceCounter(uint64_t* count) {
 	return TRUE;
 }
 
-struct event {
+struct object {
+	enum { t_invalid, t_thread, t_event };
+	object(int type) : type(type) {}
+	virtual ~object() {}
+	int type;
+	std::atomic<int> refcount = 1;
+};
+
+template<typename T>
+struct handle {
+	T* ptr = nullptr;
+	handle(T* ptr) : ptr(ptr) {}
+	handle(const handle& n) {
+		ptr = n.ptr;
+		if (ptr) ++ptr->refcount;
+	}
+	handle(handle&& n) {
+		ptr = n.ptr;
+		n.ptr = nullptr;
+	}
+	~handle() {
+		if (ptr && --ptr->refcount == 0) {
+			delete ptr;
+		}
+	}
+	handle& operator=(const handle& n) {
+		ptr = n.ptr;
+		if (ptr) ++ptr->refcount;
+	}
+	handle& operator=(handle&& n) {
+		std::swap(ptr, n.ptr);
+	}
+	T& operator*() const {
+		return *ptr;
+	}
+	T* operator->() const {
+		return ptr;
+	}
+	T* get() const {
+		return ptr;
+	}
+	explicit operator bool() const {
+		return ptr != nullptr;
+	}
+};
+
+template<typename T>
+handle<T> new_object() {
+	return handle<T>(new T());
+}
+
+struct event: object {
+	event() : object(object::t_event) {}
 	bool manual_reset = false;
 };
 
@@ -587,6 +755,135 @@ HANDLE WINAPI CreateEventA(void* security_attributes, BOOL manual_reset, BOOL in
 	e->manual_reset = manual_reset != FALSE;
 	log("CreateEventA '%s' -> %p\n", name, e);
 	return e;
+}
+
+struct thread: object {
+	thread() : object(object::t_thread) {}
+	DWORD id = 0;
+	std::thread thread_obj;
+	bool running = true;
+	DWORD exit_code = 259;
+};
+
+std::vector<std::atomic<thread*>> all_threads(0x10000);
+std::atomic<size_t> thread_ids_available = all_threads.size() - 1;
+std::atomic<size_t> next_thread_id = 1;
+
+handle<thread> new_thread() {
+	auto t = new_object<thread>();
+	for (size_t i = next_thread_id;;++i) {
+		if (i >= all_threads.size()) i = 1;
+		if (thread_ids_available == 0) return nullptr;
+		auto& ref = all_threads[i];
+		auto val = ref.load(std::memory_order_consume);
+		if (val) continue;
+		if (!ref.compare_exchange_weak(val, &*t, std::memory_order_relaxed)) continue;
+		next_thread_id = i + 1;
+		--thread_ids_available;
+		t->id = i;
+		break;
+	}
+	return t;
+}
+
+HANDLE WINAPI CreateThread(void* security_attributes, SIZE_T stack_size, void* start_address, void* parameter, DWORD creation_flags, DWORD* thread_id) {
+	if (creation_flags & 4) {
+		SetLastError(ERROR_NOT_SUPPORTED);
+		log("CreateThread: CREATE_SUSPENDED is not supported");
+		return nullptr;
+	}
+	auto t = new_thread();
+	if (!t) {
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return nullptr;
+	}
+	log("created a new thread with id %d\n", t->id);
+	t->thread_obj = std::thread(std::bind(environment::enter_thread, [t, start_address, parameter]() {
+		tlb.thread_id = t->id;
+		log("thread running, yey\n");
+		modules::call_thread_attach();
+		t->exit_code = ((DWORD(WINAPI*)(void*))start_address)(parameter);
+		modules::call_thread_detach();
+		t->running = false;
+	}));
+	if (thread_id) *thread_id = t->id;
+	return &*t;
+}
+
+BOOL WINAPI SetThreadPriority(HANDLE h, int priority) {
+	SetLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
+
+void set_main_module(modules::module_info* i) {
+	tlb.main_module_info = i;
+	tlb.thread_id = new_thread()->id;
+	log("main thread id is %d\n", tlb.thread_id);
+}
+
+void WINAPI GetSystemInfo(SYSTEM_INFO* info) {
+	info->wProcessorArchitecture = 0;
+	info->wReserved = 0;
+	info->dwPageSize = 0x1000;
+	info->lpMinimumApplicationAddress = (void*)0x10000;
+	info->lpMaximumApplicationAddress = (void*)((uintptr_t)2048 * 1024 * 1024);
+	info->dwActiveProcessorMask = 1;
+	info->dwNumberOfProcessors = 1;
+	info->dwProcessorType = 586;
+	info->dwAllocationGranularity = vm_allocation_granularity;
+	info->wProcessorLevel = 1;
+	info->wProcessorRevision = 257;
+}
+
+BOOL WINAPI GetDiskFreeSpaceA(const char* root_path, DWORD* out_sectors_per_cluster, DWORD* out_bytes_per_sector, DWORD* out_free_clusters, DWORD* out_total_number_of_clusters) {
+	return FALSE;
+}
+
+void WINAPI GlobalMemoryStatus(MEMORYSTATUS* status) {
+	status->dwLength = sizeof(*status);
+	status->dwMemoryLoad = 1;
+	status->dwTotalPhys = 0xffffffff;
+	status->dwAvailPhys = 0xffffffff;
+	status->dwTotalPageFile = 0xffffffff;
+	status->dwAvailPageFile = 0xffffffff;
+	status->dwTotalVirtual = vm_end_addr - vm_begin_addr;
+	status->dwAvailVirtual = (vm_end_addr - vm_begin_addr) - vm_total_allocated;
+}
+
+HANDLE WINAPI GetCurrentProcess() {
+	return (HANDLE)-1;
+}
+
+BOOL WINAPI SetConsoleCtrlHandler(void* handler, BOOL add) {
+	return TRUE;
+}
+
+DWORD WINAPI GetFileAttributesA(const char* filename) {
+	log("GetFileAttributes for %s\n", filename);
+	SetLastError(ERROR_NOT_SUPPORTED);
+	return (DWORD)-1;
+}
+
+DWORD WINAPI GetFullPathNameA(const char* path, DWORD buflen, char* buf, char** filepart) {
+	auto s = get_full_path(path);
+	for (size_t i = 0; i < std::min(s.size() + 1, (size_t)buflen); ++i) {
+		buf[i] = s.data()[i];
+	}
+	if (s.size() + 1 > buflen) {
+		SetLastError(ERROR_INSUFFICIENT_BUFFER);
+		return s.size() + 1;
+	}
+	return s.size();
+}
+
+UINT WINAPI GetDriveTypeA(const char* path_name) {
+	log("GetDriveType '%s'\n", path_name);
+	return 0;
+}
+
+BOOL WINAPI GetVolumeInformationA(const char* root_path, char* volume_name, DWORD volume_name_size, DWORD* serial_number, DWORD* max_component_length, DWORD* filesystem_flags, char* filesystem_name, DWORD filesystem_name_size) {
+	SetLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
 }
 
 register_funcs funcs({
@@ -633,6 +930,17 @@ register_funcs funcs({
 	{ "kernel32:GetTickCount", GetTickCount },
 	{ "kernel32:QueryPerformanceCounter", QueryPerformanceCounter },
 	{ "kernel32:CreateEventA", CreateEventA },
+	{ "kernel32:GetSystemInfo", GetSystemInfo },
+	{ "kernel32:GetDiskFreeSpaceA", GetDiskFreeSpaceA },
+	{ "kernel32:GlobalMemoryStatus", GlobalMemoryStatus },
+	{ "kernel32:GetCurrentProcess", GetCurrentProcess },
+	{ "kernel32:SetConsoleCtrlHandler", SetConsoleCtrlHandler },
+	{ "kernel32:CreateThread", CreateThread },
+	{ "kernel32:SetThreadPriority", SetThreadPriority },
+	{ "kernel32:GetFileAttributesA", GetFileAttributesA },
+	{ "kernel32:GetFullPathNameA", GetFullPathNameA },
+	{ "kernel32:GetDriveTypeA", GetDriveTypeA },
+	{ "kernel32:GetVolumeInformationA", GetVolumeInformationA },
 });
 
 

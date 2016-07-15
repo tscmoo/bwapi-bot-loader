@@ -12,8 +12,8 @@ namespace native_api {
 	};
 
 	struct allocated_memory {
-		void* ptr;
-		size_t size;
+		void* ptr = nullptr;
+		size_t size = 0;
 		void* detach() {
 			void* r = ptr;
 			ptr = nullptr;
@@ -21,8 +21,8 @@ namespace native_api {
 		}
 		allocated_memory() = default;
 		explicit allocated_memory(void* ptr, size_t size) : ptr(ptr), size(size) {}
-		explicit allocated_memory(size_t size, memory_access access) : ptr(nullptr) {
-			allocate(size, access);
+		explicit allocated_memory(void* addr, size_t size, memory_access access) : ptr(nullptr) {
+			allocate(addr, size, access);
 		}
 		~allocated_memory() {
 			deallocate();
@@ -31,7 +31,7 @@ namespace native_api {
 			return ptr != nullptr;
 		}
 
-		void allocate(size_t size, memory_access access);
+		void allocate(void* addr, size_t size, memory_access access);
 		void deallocate();
 	};
 

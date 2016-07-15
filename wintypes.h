@@ -16,6 +16,7 @@ namespace wintypes {
 	using UINT = uint32_t;
 	using ULONG = uint32_t;
 	using ULONG_PTR = uint32_t;
+	using DWORD_PTR = uint32_t;
 
 	using SIZE_T = uint32_t;
 
@@ -26,6 +27,8 @@ namespace wintypes {
 
 	using HMODULE = void*;
 	using HANDLE = void*;
+	using HINSTANCE = void*;
+	using HWND = void*;
 
 	static const HANDLE INVALID_HANDLE_VALUE = (HANDLE)-1;
 
@@ -33,6 +36,7 @@ namespace wintypes {
 		ERROR_SUCCESS = 0,
 		ERROR_FILE_NOT_FOUND = 2,
 		ERROR_NOT_ENOUGH_MEMORY = 8,
+		ERROR_NOT_SUPPORTED = 50,
 		ERROR_INVALID_PARAMETER = 87,
 		ERROR_INSUFFICIENT_BUFFER = 122,
 		ERROR_MOD_NOT_FOUND = 126,
@@ -232,6 +236,52 @@ namespace wintypes {
 		DWORD AddressOfFunctions;
 		DWORD AddressOfNames;
 		DWORD AddressOfNameOrdinals;
+	};
+
+	struct IMAGE_RESOURCE_DIRECTORY {
+		DWORD Characteristics;
+		DWORD TimeDateStamp;
+		WORD MajorVersion;
+		WORD MinorVersion;
+		WORD NumberOfNamedEntries;
+		WORD NumberOfIdEntries;
+	};
+
+	struct IMAGE_RESOURCE_DIRECTORY_ENTRY {
+		DWORD Name;
+		DWORD OffsetToData;
+	};
+
+	struct IMAGE_RESOURCE_DATA_ENTRY {
+		DWORD OffsetToData;
+		DWORD Size;
+		DWORD CodePage;
+		DWORD Reserved;
+	};
+
+	struct SYSTEM_INFO {
+		WORD wProcessorArchitecture;
+		WORD wReserved;
+		DWORD dwPageSize;
+		void* lpMinimumApplicationAddress;
+		void* lpMaximumApplicationAddress;
+		DWORD_PTR dwActiveProcessorMask;
+		DWORD dwNumberOfProcessors;
+		DWORD dwProcessorType;
+		DWORD dwAllocationGranularity;
+		WORD wProcessorLevel;
+		WORD wProcessorRevision;
+	};
+
+	struct MEMORYSTATUS {
+		DWORD dwLength;
+		DWORD dwMemoryLoad;
+		SIZE_T dwTotalPhys;
+		SIZE_T dwAvailPhys;
+		SIZE_T dwTotalPageFile;
+		SIZE_T dwAvailPageFile;
+		SIZE_T dwTotalVirtual;
+		SIZE_T dwAvailVirtual;
 	};
 
 };
