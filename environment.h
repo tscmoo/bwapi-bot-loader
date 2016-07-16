@@ -64,7 +64,20 @@ struct register_funcs {
 
 namespace environment {
 	void init();
+	struct func_wrapper {
+		void(*func)(void*arg);
+		void* arg;
+		void operator()() {
+			func(arg);
+		}
+	};
 	void enter_thread(const std::function<void()>& f);
+	template<typename F>
+	void enter_thread(const F& f) {
+		enter_thread(std::function<void()>([&]() {
+			f();
+		}));
+	}
 }
 
 template<typename T1, typename T2>
@@ -101,19 +114,37 @@ static std::string full_path(const std::string& path, char separator = '\\') {
 		}
 	}
 	std::string r;
+	if (ps.empty()) r += "Z:\\";
+	else {
+		auto& v = ps.front();
+		if (v.second != 2 || path.data()[v.first + 1] != ':') {
+			r += "Z:\\";
+		}
+	}
+	bool is_first = true;
 	for (auto& v : ps) {
-		r += separator;
+		if (is_first) is_first = false;
+		else r += separator;
 		r.append(path.data() + v.first, v.second);
 	}
 	return r;
 }
 
 static std::string path_to_native(const std::string& path) {
-	return "." + full_path(path, '/');
+	auto s = full_path(path, '/');
+	if (s.size() < 3 || s[1] != ':') fatal_error("full path returned '%s', which does not start with a drive letter", s);
+	char drive = s[0];
+	std::string r = ".";
+	if (drive != 'Z') {
+		r += "/drive/";
+		r += drive;
+	}
+	r += &s[2];
+	return r;
 }
 
 static std::string get_full_path(const std::string& path) {
-	return "Z:\\" + full_path(path, '\\');
+	return full_path(path, '\\');
 }
 static std::string get_filename(const std::string& path) {
 	auto s = full_path(path, '\\');

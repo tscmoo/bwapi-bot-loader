@@ -65,7 +65,7 @@ module_info* load_module(const char* path, bool overwrite) {
 		return f.read(dst, size);
 	};
 	auto seek = [&](size_t pos) -> bool {
-		f.set_pos(pos);
+		f.set_pos(pos, native_api::file_set_pos_origin::begin);
 		return true;
 	};
 
@@ -104,7 +104,7 @@ module_info* load_module(const char* path, bool overwrite) {
 			}
 		}
 	} else {
-		addr_handle.ptr = kernel32::virtual_allocate(nullptr, image_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE, modules_start_addr);
+		addr_handle.ptr = kernel32::virtual_allocate(nullptr, image_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE, modules_start_addr);
 		addr = addr_handle.ptr;
 	}
 	if (!addr) return nullptr;
@@ -161,7 +161,7 @@ module_info* load_module(const char* path, bool overwrite) {
 		r->base = addr;
 		r->entry = 0;
 
-		if (!addr_handle.ptr) kernel32::add_virtual_region(addr, image_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+		if (!addr_handle.ptr) kernel32::add_virtual_region(addr, image_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
 		else addr_handle.ptr = nullptr;
 
 		if (loaded_modules.size() == 1) kernel32::set_main_module(r);
@@ -329,7 +329,8 @@ module_info* load_main(const char* path, bool overwrite) {
 	std::list<std::pair<module_info*, bool>> dll_entries;
 	{
 		std::lock_guard<std::recursive_mutex> l(load_mut);
-		if (is_loading) fatal_error("load: is_loading");
+		if (is_loading) fatal_error("load_main: is_loading is set");
+		if (!loaded_modules.empty()) fatal_error("load_main: loaded modules is not empty");
 		is_loading = true;
 		i = load_module(path, overwrite);
 		dll_entries = std::move(dll_entries_to_call);
@@ -338,16 +339,18 @@ module_info* load_main(const char* path, bool overwrite) {
 	}
 	if (i) {
 		environment::enter_thread([&]() {
-			for (auto& v : dll_entries) {
-				log("calling entry point for %p\n", v.first->base);
-				void* entry = v.first->entry;
-				void* base = v.first->base;
-				int load_time = v.second ? 1 : 0;
-				BOOL r = ((BOOL(WINAPI*)(void*, DWORD, int))entry)(base, 1, load_time);
-				log("entry point for %p returned\n", v.first->base);
-				if (!r) fatal_error("DllEntryPoint for '%s' failed", v.first->full_path);
-			}
-			((void(*)())i->entry)();
+			kernel32::enter_main_thread([&]() {
+				for (auto& v : dll_entries) {
+					log("calling entry point for %p\n", v.first->base);
+					void* entry = v.first->entry;
+					void* base = v.first->base;
+					int load_time = v.second ? 1 : 0;
+					BOOL r = ((BOOL(WINAPI*)(void*, DWORD, int))entry)(base, 1, load_time);
+					log("entry point for %p returned\n", v.first->base);
+					if (!r) fatal_error("DllEntryPoint for '%s' failed", v.first->full_path);
+				}
+				((void(*)())i->entry)();
+			});
 		});
 	}
 	return i;

@@ -4,6 +4,7 @@
 #include "wintypes.h"
 
 #include <string>
+#include <functional>
 
 namespace modules {
 	struct module_info;
@@ -13,12 +14,13 @@ namespace kernel32 {
 	using namespace wintypes;
 
 	void set_main_module(modules::module_info*);
+	void enter_main_thread(const std::function<void()>& f);
 
-	void add_virtual_region(void* addr, size_t size, DWORD state, PAGE_PROTECT protect);
+	void add_virtual_region(void* addr, size_t size, MEM_STATE state, PAGE_PROTECT protect);
 
 	extern std::string cmdline;
 
-	void* virtual_allocate(void* addr, size_t size, DWORD allocation_type, PAGE_PROTECT protect, void* preferred_addr = nullptr);
+	void* virtual_allocate(void* addr, size_t size, MEM_STATE allocation_type, PAGE_PROTECT protect, void* preferred_addr = nullptr);
 	void virtual_deallocate(void* addr);
 
 	void virtual_protect(void* addr, size_t size, PAGE_PROTECT protect);

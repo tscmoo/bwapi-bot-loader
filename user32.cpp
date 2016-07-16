@@ -270,35 +270,35 @@ struct wsprintf {
 			switch (desc.c) {
 			case 'c':
 				if (desc.mod == 'h') {
-					auto c = va_arg(args, char16_t);
-					if (c) do_char(c);
+					auto c = va_arg(args, int);
+					if (c) do_char<char16_t>(c);
 				} else if (desc.mod == 'l') {
-					auto c = va_arg(args, char16_t);
-					if (c) do_char(c);
-				} else do_char(va_arg(args, char16_t));
+					auto c = va_arg(args, int);
+					if (c) do_char<char16_t>(c);
+				} else do_char<char16_t>(va_arg(args, int));
 				break;
 			case 'C':
 				if (desc.mod == 'h') {
-					auto c = va_arg(args, char16_t);
-					if (c) do_char(c);
+					auto c = va_arg(args, int);
+					if (c) do_char<char16_t>(c);
 				} else if (desc.mod == 'l') {
-					auto c = va_arg(args, char16_t);
-					if (c) do_char(c);
-				} else do_char(va_arg(args, char16_t));
+					auto c = va_arg(args, int);
+					if (c) do_char<char16_t>(c);
+				} else do_char<char16_t>(va_arg(args, int));
 				break;
 			case 'd': case 'i':
 				if (desc.mod == 'h') {
-					do_num<int16_t, 10, false>(va_arg(args, int16_t));
+					do_num<int16_t, 10, false>(va_arg(args, int));
 				} else if (desc.mod == 'l') {
 					do_num<long, 10, false>(va_arg(args, long));
-				} else do_num<int32_t, 10, false>(va_arg(args, int32_t));
+				} else do_num<int32_t, 10, false>(va_arg(args, int));
 				break;
 			case 'u':
 				if (desc.mod == 'h') {
-					do_num<uint16_t, 10, false>(va_arg(args, uint16_t));
+					do_num<uint16_t, 10, false>(va_arg(args, int));
 				} else if (desc.mod == 'l') {
 					do_num<unsigned long, 10, false>(va_arg(args, unsigned long));
-				} else do_num<uint32_t, 10, false>(va_arg(args, uint32_t));
+				} else do_num<uint32_t, 10, false>(va_arg(args, int));
 				break;
 			case 'p':
 				desc.flag_hash = true;

@@ -2,12 +2,15 @@
 #include "environment.h"
 
 #include <cstdint>
+#include <algorithm>
+
+namespace native_api {
+	;
+
+struct file_io_impl;
 
 #ifdef _WIN32
 #include <windows.h>
-
-namespace native_api {
-;
 
 void allocated_memory::allocate(void* addr, size_t size, memory_access access) {
 	if (ptr) deallocate();
@@ -42,36 +45,51 @@ bool set_memory_access(void* ptr, size_t size, memory_access access) {
 	return VirtualProtect(ptr, size, protect, &old_protect) != FALSE;
 }
 
-file_io::file_io() {
-	h = INVALID_HANDLE_VALUE;
-}
-file_io::~file_io() {
-	if (h) CloseHandle(h);
-}
-bool file_io::open(const char* fn, file_access access, file_open_mode mode) {
-	DWORD desired_access = 0;
-	if (access == file_access::read) desired_access = GENERIC_READ;
-	else if (access == file_access::read_write) desired_access = GENERIC_READ | GENERIC_WRITE;
-	DWORD creation_disposition = OPEN_EXISTING;
-	if (mode == file_open_mode::open_existing) creation_disposition = OPEN_EXISTING;
-	if (mode == file_open_mode::create_new) creation_disposition = CREATE_NEW;
-	h = CreateFileA(fn, desired_access, FILE_SHARE_READ, nullptr, creation_disposition, 0, nullptr);
-	return h != INVALID_HANDLE_VALUE;
-}
-bool file_io::read(void* buffer, size_t size) {
-	DWORD read = 0;
-	return ReadFile(h, buffer, size, &read, nullptr) && read == size;
-}
-void file_io::set_pos(uint64_t pos) {
-	SetFilePointerEx(h, (LARGE_INTEGER&)pos, nullptr, FILE_BEGIN);
-}
-uint64_t file_io::get_pos() {
-	uint64_t move = 0;
-	uint64_t r = 0;
-	SetFilePointerEx(h, (LARGE_INTEGER&)move, &(LARGE_INTEGER&)r, FILE_CURRENT);
-	return r;
+struct file_io_impl {
+	HANDLE h;
+	file_io_impl() {
+		h = INVALID_HANDLE_VALUE;
+	}
+	~file_io_impl() {
+		if (h) CloseHandle(h);
+	}
+	bool open(const char* fn, file_access access, file_open_mode mode) {
+		DWORD desired_access = 0;
+		if (access == file_access::read) desired_access = GENERIC_READ;
+		else if (access == file_access::read_write) desired_access = GENERIC_READ | GENERIC_WRITE;
+		DWORD creation_disposition = OPEN_EXISTING;
+		if (mode == file_open_mode::open_existing) creation_disposition = OPEN_EXISTING;
+		if (mode == file_open_mode::create_new) creation_disposition = CREATE_NEW;
+		h = CreateFileA(fn, desired_access, FILE_SHARE_READ, nullptr, creation_disposition, 0, nullptr);
+		return h != INVALID_HANDLE_VALUE;
+	}
+	bool read(void* buffer, size_t size) {
+		DWORD read = 0;
+		return ReadFile(h, buffer, size, &read, nullptr) && read == size;
+	}
+	uint64_t set_pos(uint64_t pos, file_set_pos_origin origin) {
+		uint64_t r = 0;
+		DWORD move_method = FILE_BEGIN;
+		if (origin == file_set_pos_origin::current) move_method = FILE_CURRENT;
+		if (origin == file_set_pos_origin::end) move_method = FILE_END;
+		SetFilePointerEx(h, (LARGE_INTEGER&)pos, &(LARGE_INTEGER&)r, move_method);
+		return r;
+	}
+	uint64_t get_pos() {
+		uint64_t move = 0;
+		uint64_t r = 0;
+		SetFilePointerEx(h, (LARGE_INTEGER&)move, &(LARGE_INTEGER&)r, FILE_CURRENT);
+		return r;
+	}
+};
+
+template<typename T, typename std::enable_if<sizeof(T) == sizeof(long)>::type* = nullptr>
+T interlocked_increment(T* ptr) {
+	return _InterlockedIncrement((long*)ptr);
 }
 
+int32_t interlocked_increment(int32_t* ptr) {
+	return interlocked_increment<int32_t>(ptr);
 }
 
 #else
@@ -137,7 +155,29 @@ uint64_t file_io::get_pos() {
 	return ftell((FILE*)h);
 }
 
+#endif
+
+
+file_io::file_io() {
+	impl = std::make_unique<file_io_impl>();
+}
+file_io::file_io(file_io&& n) {
+	std::swap(impl, n.impl);
+}
+file_io::~file_io() {
+}
+bool file_io::open(const char* fn, file_access access, file_open_mode mode) {
+	return impl->open(fn, access, mode);
+}
+bool file_io::read(void* buffer, size_t size) {
+	return impl->read(buffer, size);
+}
+uint64_t file_io::set_pos(uint64_t pos, file_set_pos_origin origin) {
+	return impl->set_pos(pos, origin);
+}
+uint64_t file_io::get_pos() {
+	return impl->get_pos();
 }
 
-#endif
+}
 

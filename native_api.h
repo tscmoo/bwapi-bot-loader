@@ -1,5 +1,8 @@
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
+#include <string>
+#include <chrono>
 
 namespace native_api {
 
@@ -47,16 +50,49 @@ namespace native_api {
 		create_new
 	};
 
+	enum class file_set_pos_origin {
+		begin,
+		current,
+		end
+	};
+
+	struct file_io_impl;
+
 	class file_io {
-		void* h;
+		std::unique_ptr<file_io_impl> impl;
 	public:
 		file_io();
+		file_io(file_io&& n);
 		~file_io();
 		bool open(const char* fn, file_access access, file_open_mode mode);
 		bool read(void* buffer, size_t size);
-		void set_pos(uint64_t pos);
+		uint64_t set_pos(uint64_t pos, file_set_pos_origin origin);
 		uint64_t get_pos();
 	};
+
+	struct directory_io_impl;
+
+	struct directory_entry {
+		std::string file_name;
+		std::chrono::system_clock::time_point creation_time;
+		std::chrono::system_clock::time_point access_time;
+		std::chrono::system_clock::time_point write_time;
+		uint64_t file_size = 0;
+		bool is_directory = false;
+	};
+
+	struct directory_io {
+		std::unique_ptr<directory_io_impl> impl;
+	public:
+		directory_io();
+		directory_io(directory_io&& n);
+		~directory_io();
+		bool open(const char* fn);
+		directory_entry get();
+		bool next();
+	};
+
+	int32_t interlocked_increment(int32_t*);
 
 };
 

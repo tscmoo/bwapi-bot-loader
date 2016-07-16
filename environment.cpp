@@ -76,7 +76,7 @@ namespace environment {
 
 		size_t stack_size = 2 * 1024 * 1024;
 
-		void* stack = kernel32::virtual_allocate(nullptr, stack_size, MEM_RESERVE | MEM_COMMIT, PAGE_NOACCESS);
+		void* stack = kernel32::virtual_allocate(nullptr, stack_size, MEM_COMMIT, PAGE_NOACCESS);
 		if (!stack) fatal_error("failed to allocate stack");
 
 		intptr_t sp_bot = (intptr_t)stack + 0x1000;

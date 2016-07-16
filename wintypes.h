@@ -30,18 +30,27 @@ namespace wintypes {
 	using HINSTANCE = void*;
 	using HWND = void*;
 
+	using FILETIME = uint64_t;
+
 	static const HANDLE INVALID_HANDLE_VALUE = (HANDLE)-1;
+
+	static const DWORD GENERIC_READ = 0x80000000;
+	static const DWORD GENERIC_WRITE = 0x40000000;
+	static const DWORD GENERIC_ALL = 0x10000000;
 
 	enum errors {
 		ERROR_SUCCESS = 0,
 		ERROR_FILE_NOT_FOUND = 2,
+		ERROR_INVALID_HANDLE = 6,
 		ERROR_NOT_ENOUGH_MEMORY = 8,
+		ERROR_READ_FAULT = 30,
 		ERROR_NOT_SUPPORTED = 50,
 		ERROR_INVALID_PARAMETER = 87,
 		ERROR_INSUFFICIENT_BUFFER = 122,
 		ERROR_MOD_NOT_FOUND = 126,
 		ERROR_PROC_NOT_FOUND = 127,
 		ERROR_INVALID_ADDRESS = 487,
+		ERROR_NO_SYSTEM_RESOURCES = 1450
 	};
 
 	enum PAGE_PROTECT : DWORD {
@@ -63,6 +72,21 @@ namespace wintypes {
 		MEM_DECOMMIT = 0x4000,
 		MEM_RELEASE = 0x8000
 	};
+
+	enum FILE_TYPE : DWORD {
+		FILE_TYPE_UNKNOWN = 0,
+		FILE_TYPE_DISK = 1,
+		FILE_TYPE_CHAR = 2,
+		FILE_TYPE_PIPE = 3
+	};
+
+	enum MOVE_METHOD : DWORD {
+		FILE_BEGIN = 0,
+		FILE_CURRENT = 1,
+		FILE_END = 2
+	};
+
+	static const DWORD INVALID_SET_FILE_POINTER = (DWORD)-1;
 
 	struct IMAGE_DOS_HEADER {
 		WORD e_magic;
@@ -282,6 +306,19 @@ namespace wintypes {
 		SIZE_T dwAvailPageFile;
 		SIZE_T dwTotalVirtual;
 		SIZE_T dwAvailVirtual;
+	};
+
+	struct WIN32_FIND_DATAA {
+		DWORD dwFileAttributes;
+		FILETIME ftCreationTime;
+		FILETIME ftLastAccessTime;
+		FILETIME ftLastWriteTime;
+		DWORD nFileSizeHigh;
+		DWORD nFileSizeLow;
+		DWORD dwReserved0;
+		DWORD dwReserved1;
+		char cFileName[260];
+		char cAlternateFileName[14];
 	};
 
 };
