@@ -50,7 +50,7 @@ void* const modules_start_addr = (void*)((uintptr_t)16 * 1024 * 1024);
 
 module_info* load_module(const char* path, bool overwrite) {
 
-	auto native_path = path_to_native(path);
+	auto native_path = get_native_path(path);
 
 	native_api::file_io f;
 	if (!f.open(native_path.c_str(), native_api::file_access::read, native_api::file_open_mode::open_existing)) {
@@ -62,7 +62,8 @@ module_info* load_module(const char* path, bool overwrite) {
 	void* addr = nullptr;
 
 	auto get = [&](void* dst, size_t size) -> bool {
-		return f.read(dst, size);
+		size_t read = 0;
+		return f.read(dst, size, &read) && read == size;
 	};
 	auto seek = [&](size_t pos) -> bool {
 		f.set_pos(pos, native_api::file_set_pos_origin::begin);
@@ -180,7 +181,7 @@ module_info* load_module(const char* path, bool overwrite) {
 
 		DWORD* funcs = (DWORD*)((uint8_t*)addr + exportd->AddressOfFunctions);
 		DWORD* names = (DWORD*)((uint8_t*)addr + exportd->AddressOfNames);
-		DWORD* name_ordinals = (DWORD*)((uint8_t*)addr + exportd->AddressOfNameOrdinals);
+		WORD* name_ordinals = (WORD*)((uint8_t*)addr + exportd->AddressOfNameOrdinals);
 
 		for (size_t i = 0; i < exportd->NumberOfFunctions; ++i) {
 			if (funcs[i]) r->exports.push_back((uint8_t*)addr + funcs[i]);
@@ -227,6 +228,9 @@ module_info* load_module(const char* path, bool overwrite) {
 						//log("imported ordinal %d from %s\n", ordinal + mi->ordinal_base, mi->name);
 						proc = mi->exports[ordinal];
 					}
+				} else {
+					const char* name = (const char*)addr + *dw + 2;
+					log("import '%s'?\n", name);
 				}
 			}
 			if (!proc) proc = get_unimplemented_stub(fullname);
@@ -324,6 +328,8 @@ module_info* load_library(const char* path, bool is_load_time) {
 	return i;
 }
 
+std::function<void()> pre_entry_callback;
+
 module_info* load_main(const char* path, bool overwrite) {
 	module_info* i = nullptr;
 	std::list<std::pair<module_info*, bool>> dll_entries;
@@ -349,6 +355,7 @@ module_info* load_main(const char* path, bool overwrite) {
 					log("entry point for %p returned\n", v.first->base);
 					if (!r) fatal_error("DllEntryPoint for '%s' failed", v.first->full_path);
 				}
+				if (pre_entry_callback) pre_entry_callback();
 				((void(*)())i->entry)();
 			});
 		});

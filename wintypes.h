@@ -30,7 +30,10 @@ namespace wintypes {
 	using HINSTANCE = void*;
 	using HWND = void*;
 
-	using FILETIME = uint64_t;
+	struct FILETIME {
+		DWORD dwLowDateTime;
+		DWORD dwHighDateTime;
+	};
 
 	static const HANDLE INVALID_HANDLE_VALUE = (HANDLE)-1;
 
@@ -41,6 +44,7 @@ namespace wintypes {
 	enum errors {
 		ERROR_SUCCESS = 0,
 		ERROR_FILE_NOT_FOUND = 2,
+		ERROR_PATH_NOT_FOUND = 3,
 		ERROR_INVALID_HANDLE = 6,
 		ERROR_NOT_ENOUGH_MEMORY = 8,
 		ERROR_READ_FAULT = 30,
@@ -319,6 +323,18 @@ namespace wintypes {
 		DWORD dwReserved1;
 		char cFileName[260];
 		char cAlternateFileName[14];
+	};
+
+	struct RECT {
+		LONG left;
+		LONG top;
+		LONG right;
+		LONG bottom;
+	};
+
+	struct POINT {
+		LONG x;
+		LONG y;
 	};
 
 };

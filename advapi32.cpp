@@ -16,9 +16,15 @@ BOOL WINAPI AllocateAndInitializeSid(void*, BYTE, DWORD, DWORD, DWORD, DWORD, DW
 	return FALSE;
 }
 
+BOOL WINAPI CryptAcquireContextA(void**, const char*, const char*, DWORD, DWORD) {
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
+
 register_funcs funcs({
 	{ "advapi32:RegOpenKeyExA", RegOpenKeyExA },
 	{ "advapi32:AllocateAndInitializeSid", AllocateAndInitializeSid },
+	{ "advapi32:CryptAcquireContextA", CryptAcquireContextA },
 });
 
 }

@@ -58,7 +58,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <BaseAddress>0x240000</BaseAddress>
+      <BaseAddress>0x200000</BaseAddress>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <FixedBaseAddress>true</FixedBaseAddress>
     </Link>
@@ -95,7 +95,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="environment.h" />
-    <ClInclude Include="headless.h" />
+    <ClInclude Include="intrusive_list.h" />
     <ClInclude Include="kernel32.h" />
     <ClInclude Include="modules.h" />
     <ClInclude Include="native_api.h" />

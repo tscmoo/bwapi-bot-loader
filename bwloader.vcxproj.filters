@@ -56,10 +56,10 @@
     <ClInclude Include="strf.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="headless.h">
+    <ClInclude Include="environment.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="environment.h">
+    <ClInclude Include="intrusive_list.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

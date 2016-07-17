@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 #include <list>
+#include <functional>
 
 namespace modules {
 
@@ -38,6 +39,8 @@ namespace modules {
 	module_info* get_module_info(void* base);
 
 	module_info* load_library(const char* path, bool is_load_time);
+
+	extern std::function<void()> pre_entry_callback;
 
 	module_info* load_main(const char* path, bool overwrite = false);
 	module_info* load_fake_module(const char* name);

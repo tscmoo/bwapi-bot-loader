@@ -11,8 +11,33 @@ namespace user32 {
 
 int WINAPI LoadStringA(HINSTANCE h, UINT id, char* buffer, int size) {
 	if (buffer && size) *buffer = 0;
-	log("loadstring %d %p %d\n", id, buffer, size);
+	log("LoadString %p %d %p %d; not supported\n", (void*)h, id, buffer, size);
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
 	return 0;
+}
+
+void* WINAPI LoadAcceleratorsA(HINSTANCE h, const char* table_name) {
+	log("LoadAccelerators %p %p; not supported\n", (void*)h, table_name);
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return nullptr;
+}
+
+void* WINAPI LoadIconA(HINSTANCE h, const char* icon_name) {
+	log("LoadIcon %p %p; not supported\n", (void*)h, icon_name);
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return nullptr;
+}
+
+HANDLE WINAPI LoadImageA(HINSTANCE h, const char* name, UINT type, int width, int height, UINT load) {
+	log("LoadImage %p %p %d %d %d %d; not supported\n", (void*)h, name, type, width, height, load);
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return nullptr;
+}
+
+void* WINAPI LoadCursorA(HINSTANCE h, const char* cursor_name) {
+	log("LoadCursor %p %p; not supported\n", (void*)h, cursor_name);
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return nullptr;
 }
 
 HWND WINAPI GetForegroundWindow() {
@@ -349,10 +374,47 @@ int wsprintfA(char* dst, const char* fmt, ...) {
 	return r;
 }
 
+BOOL WINAPI SetRect(RECT* out, LONG left, LONG top, LONG right, LONG bottom) {
+	out->left = left;
+	out->top = top;
+	out->right = right;
+	out->bottom = bottom;
+	return TRUE;
+}
+
+BOOL WINAPI ClientToScreen(HWND h, POINT* inout) {
+	return TRUE;
+}
+
+BOOL WINAPI PeekMessageA(void* msg, HWND hwnd, UINT msg_filter_min, UINT msg_filter_max, UINT remove_msg) {
+	log("PeekMessage: not supported\n");
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
+
+void* WINAPI RegisterClassA(void* wnd_class) {
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return nullptr;
+}
+
+BOOL WINAPI GetClassInfoA(HINSTANCE h, const char* class_name, void* wnd_class) {
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
+
 register_funcs funcs({
 	{ "user32:LoadStringA", LoadStringA },
+	{ "user32:LoadAcceleratorsA", LoadAcceleratorsA },
+	{ "user32:LoadIconA", LoadIconA },
+	{ "user32:LoadImageA", LoadImageA },
+	{ "user32:LoadCursorA", LoadCursorA },
 	{ "user32:GetForegroundWindow", GetForegroundWindow },
 	{ "user32:wsprintfA", (int(*)(char*,const char*))wsprintfA },
+	{ "user32:SetRect", SetRect },
+	{ "user32:ClientToScreen", ClientToScreen },
+	{ "user32:PeekMessageA", PeekMessageA },
+	{ "user32:RegisterClassA", RegisterClassA },
+	{ "user32:GetClassInfoA", GetClassInfoA },
 });
 
 }

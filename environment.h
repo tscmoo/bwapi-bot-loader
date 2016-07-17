@@ -5,14 +5,18 @@
 #include <vector>
 #include <unordered_map>
 #include <functional>
+#include <chrono>
 
 #include "strf.h"
 
+
 #ifdef _MSC_VER
-#define WINAPI __stdcall
+#define STDCALL __stdcall
 #else
-#define WINAPI __attribute__((stdcall))
+#define STDCALL __attribute__((stdcall))
 #endif
+
+#define WINAPI STDCALL
 
 template<typename...T>
 static std::string format(const char* fmt, T&&...args) {
@@ -44,7 +48,7 @@ struct func_ptr {
 		raw_ptr_value = (void*)ptr;
 	}
 	template<typename R, typename... args_T>
-	func_ptr(R(WINAPI*ptr)(args_T...)) {
+	func_ptr(R(STDCALL*ptr)(args_T...)) {
 		raw_ptr_value = (void*)ptr;
 	}
 };
@@ -114,12 +118,15 @@ static std::string full_path(const std::string& path, char separator = '\\') {
 		}
 	}
 	std::string r;
-	if (ps.empty()) r += "Z:\\";
-	else {
+	if (ps.empty()) {
+		r += "Z:";
+		r += separator;
+	} else {
 		auto& v = ps.front();
 		if (v.second != 2 || path.data()[v.first + 1] != ':') {
-			r += "Z:\\";
-		}
+			r += "Z:";
+			r += separator;
+		} else if (ps.size() == 1) ps.emplace_back(0, 0);
 	}
 	bool is_first = true;
 	for (auto& v : ps) {
@@ -130,7 +137,7 @@ static std::string full_path(const std::string& path, char separator = '\\') {
 	return r;
 }
 
-static std::string path_to_native(const std::string& path) {
+static std::string get_native_path(const std::string& path) {
 	auto s = full_path(path, '/');
 	if (s.size() < 3 || s[1] != ':') fatal_error("full path returned '%s', which does not start with a drive letter", s);
 	char drive = s[0];

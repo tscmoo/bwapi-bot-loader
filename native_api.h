@@ -64,8 +64,9 @@ namespace native_api {
 		file_io();
 		file_io(file_io&& n);
 		~file_io();
+		file_io& operator=(file_io&& n);
 		bool open(const char* fn, file_access access, file_open_mode mode);
-		bool read(void* buffer, size_t size);
+		bool read(void* buffer, size_t size, size_t* read);
 		uint64_t set_pos(uint64_t pos, file_set_pos_origin origin);
 		uint64_t get_pos();
 	};
@@ -87,6 +88,7 @@ namespace native_api {
 		directory_io();
 		directory_io(directory_io&& n);
 		~directory_io();
+		directory_io& operator=(directory_io&& n);
 		bool open(const char* fn);
 		directory_entry get();
 		bool next();

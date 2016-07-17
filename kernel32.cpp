@@ -3,6 +3,7 @@
 using namespace wintypes;
 #include "modules.h"
 #include "native_api.h"
+#include "intrusive_list.h"
 
 #include <cstdint>
 #include <mutex>
@@ -35,12 +36,29 @@ struct TLB {
 thread_local TLB tlb;
 
 
+FILETIME to_FILETIME(uint64_t val) {
+	return FILETIME { (DWORD)(val >> 32),(DWORD)val };
+}
+uint64_t from_FILETIME(FILETIME val) {
+	return (uint64_t)val.dwLowDateTime | ((uint64_t)val.dwHighDateTime << 32);
+}
+
+static FILETIME time_point_to_FILETIME(std::chrono::system_clock::time_point time) {
+	auto c = std::chrono::duration_cast<std::chrono::duration<uint64_t, std::ratio<1, 10000000>>>(time - std::chrono::system_clock::from_time_t(0));
+	return to_FILETIME(c.count() + 116444736000000000);
+}
+
+static std::chrono::system_clock::time_point FILETIME_to_time_point(FILETIME time) {
+	auto r = std::chrono::system_clock::from_time_t(0);
+	return r + std::chrono::duration<uint64_t, std::ratio<1, 10000000>>(from_FILETIME(time) - 116444736000000000);
+}
+
 DWORD WINAPI GetLastError() {
 	return tlb.last_error;
 }
 
 void WINAPI SetLastError(DWORD err) {
-	log("SetLastError %d\n", err);
+	//log("SetLastError %d\n", err);
 	tlb.last_error = err;
 }
 
@@ -89,6 +107,27 @@ void* WINAPI GetProcAddress(HMODULE hm, const char* name) {
 	}
 	bool is_ordinal = (uintptr_t)name < 0x10000;
 	DWORD ordinal = (uintptr_t)name & 0xffff;
+	if (is_ordinal) {
+		size_t index = (size_t)ordinal - i->ordinal_base;
+		if (index < i->exports.size()) {
+			void* addr = i->exports[index];
+			log("GetProcAddress: %p ordinal %d found at %p\n", hm, ordinal, addr);
+			SetLastError(ERROR_SUCCESS);
+			return addr;
+		} else {
+			log("GetProcAddress: %p ordinal %d not found\n", hm, ordinal);
+		}
+	} else {
+		auto it = i->export_names.find(name);
+		if (it != i->export_names.end() && it->second < i->exports.size()) {
+			void* addr = i->exports[it->second];
+			log("GetProcAddress: %p::%s found at %p\n", hm, name, addr);
+			SetLastError(ERROR_SUCCESS);
+			return addr;
+		} else {
+			log("GetProcAddress: %p::%s not found\n", hm, name);
+		}
+	}
 	std::string override_name;
 	if (is_ordinal) override_name = format("%s:ordinal %d", i->lcase_name_no_ext, ordinal);
 	else override_name = format("%s:%s", i->lcase_name_no_ext, name);
@@ -111,6 +150,16 @@ HMODULE WINAPI LoadLibraryA(const char* name) {
 	return i->base;
 }
 
+BOOL WINAPI FreeLibrary(HMODULE h) {
+	auto* i = modules::get_module_info(h);
+	if (!i) {
+		log("FreeLibrary: module %p not found\n", (void*)h);
+		SetLastError(ERROR_MOD_NOT_FOUND);
+		return FALSE;
+	}
+	log("FreeLibrary: not supported");
+	return TRUE;
+}
 
 template<typename T, size_t list_size>
 class id_list {
@@ -172,10 +221,13 @@ struct object {
 	std::atomic<size_t> refcount { 0 };
 };
 
+void deref_HANDLE(HANDLE h);
+
 template<typename T>
 struct handle {
 	HANDLE h = nullptr;
 	T* ptr = nullptr;
+	handle() = default;
 	constexpr handle(std::nullptr_t) : ptr(nullptr) {}
 	explicit handle(HANDLE h, T* ptr) : h(h), ptr(ptr) {}
 	handle(const handle& n) = delete;
@@ -186,19 +238,15 @@ struct handle {
 		n.h = nullptr;
 	}
 	~handle() {
-		if (ptr) {
+		if (h) {
 			deref_HANDLE(h);
-// 			if (ptr->refcount.fetch_sub(1, std::memory_order_release) == 1) {
-// 				if (delete_HANDLE(h, ptr)) {
-// 					delete_object(ptr);
-// 				}
-// 			} else delete_HANDLE(h, ptr);
 		}
 	}
 	handle& operator=(const handle& n) = delete;
 	handle& operator=(handle&& n) {
 		std::swap(h, n.h);
 		std::swap(ptr, n.ptr);
+		return *this;
 	}
 	T& operator*() const {
 		return *ptr;
@@ -212,12 +260,6 @@ struct handle {
 	explicit operator bool() const {
 		return ptr != nullptr;
 	}
-	HANDLE release_HANDLE() {
-		HANDLE r = h;
-		h = nullptr;
-		ptr = nullptr;
-		return r;
-	}
 };
 
 constexpr size_t handles_per_container = 2;
@@ -226,12 +268,13 @@ struct handle_container {
 	size_t base = 0;
 	std::atomic<handle_container*> next { nullptr };
 	id_list<object*, handles_per_container> list;
+	std::array<std::atomic_flag, handles_per_container> handle_is_closed {};
 	std::array<std::atomic<size_t>, handles_per_container> refcounts {};
 };
 
 handle_container root_handle_container;
 std::mutex create_handle_container_mut;
-std::atomic<handle_container*> next_handle_container = &root_handle_container;
+std::atomic<handle_container*> next_handle_container { &root_handle_container };
 std::atomic<size_t> total_allocated_handles;
 
 HANDLE handle_n_to_HANDLE(size_t n) {
@@ -295,8 +338,8 @@ void delete_object(object* o);
 
 void deref_handle(handle_container* c, size_t index) {
 	if (c->refcounts[index].fetch_sub(1, std::memory_order_relaxed) == 1) {
-		c->list.deallocate(index);
 		auto* o = c->list.get(index);
+		c->list.deallocate(index);
 		if (o->refcount.fetch_sub(1, std::memory_order_release) == 1) {
 			delete_object(o);
 		}
@@ -307,10 +350,22 @@ void deref_HANDLE(HANDLE h) {
 	handle_container* c;
 	size_t index;
 	std::tie(c, index) = container_and_index_for_HANDLE(h);
-	if (!c) fatal_error("release_HANDLE: no container for HANDLE %p\n", (void*)h);
+	if (!c) fatal_error("deref_HANDLE: no container for HANDLE %p\n", (void*)h);
 	deref_handle(c, index);
 }
 
+template<typename T>
+HANDLE open_handle(T&& o) {
+	if (!o.h) fatal_error("attempt to open a null handle");
+	handle_container* c;
+	size_t index;
+	std::tie(c, index) = container_and_index_for_HANDLE(o.h);
+	c->handle_is_closed[index].clear(std::memory_order_relaxed);
+	HANDLE r = o.h;
+	o.h = nullptr;
+	o.ptr = nullptr;
+	return r;
+}
 
 template<typename T>
 handle<T> duplicate_handle(const handle<T>& o) {
@@ -981,17 +1036,12 @@ BOOL WINAPI GetCPInfo(UINT code_page, CPINFO* info) {
 }
 
 BOOL WINAPI IsProcessorFeaturePresent(DWORD feature) {
+	if (feature == 10) return TRUE;
 	if (feature != 0) fatal_error("check for processor feature %d", feature);
 	return FALSE;
 }
 
-template<typename T>
-uint64_t time_point_to_FILETIME(T time) {
-	auto c = std::chrono::duration_cast<std::chrono::duration<uint64_t, std::ratio<1, 10000000>>>((time - T::clock::from_time_t(0)));
-	return c.count() + 116444736000000000;
-}
-
-void WINAPI GetSystemTimeAsFileTime(uint64_t* out) {
+void WINAPI GetSystemTimeAsFileTime(FILETIME* out) {
 	*out = time_point_to_FILETIME(std::chrono::system_clock::now());
 }
 
@@ -1011,12 +1061,83 @@ BOOL WINAPI QueryPerformanceCounter(uint64_t* count) {
 	return TRUE;
 }
 
+struct thread : object {
+	static const auto static_type = object::t_thread;
+	DWORD id = 0;
+	std::thread thread_obj;
+	bool running = true;
+	DWORD exit_code = 259;
+
+	std::mutex wait_mut;
+	std::condition_variable wait_cv;
+	std::pair<thread*, thread*> sleep_queue_link;
+};
+
+class sleep_queue {
+	std::mutex mut;
+	using queue_t = intrusive_list<thread, void, &thread::sleep_queue_link>;
+	queue_t queue;
+public:
+	struct queue_unlinker {
+		queue_t::iterator iterator;
+		~queue_unlinker() {
+			if (iterator != queue_t::iterator()) queue_t::erase(iterator);
+		}
+	};
+	template<typename pred_T>
+	void wait(pred_T&& pred) {
+		auto t = tlb.current_thread;
+		std::unique_lock<std::mutex> ml(mut);
+		if (pred()) return;
+		queue_unlinker unlinker { queue.insert(queue.end(), *t) };
+		t->wait_cv.wait(ml, std::forward<pred_T>(pred));
+	}
+	template<typename rep, typename period, typename pred_T>
+	bool wait_for(const std::chrono::duration<rep, period>& timeout_duration, pred_T&& pred) {
+		auto t = tlb.current_thread;
+		std::unique_lock<std::mutex> ml(mut);
+		if (pred()) return true;
+		queue_unlinker unlinker { queue.insert(queue.end(), *t) };
+		return t->wait_cv.wait_for(ml, timeout_duration, std::forward<pred_T>(pred));
+	}
+	void notify_one() {
+		fatal_error("sleep_queue::notify_one");
+	}
+	void notify_all() {
+		std::lock_guard<std::mutex> ml(mut);
+		for (auto& v : queue) {
+			std::lock_guard<std::mutex> tl(v.wait_mut);
+			v.wait_cv.notify_all();
+		}
+	}
+	bool empty() {
+		std::lock_guard<std::mutex> l(mut);
+		return queue.empty();
+	}
+	template<typename rep, typename period, typename pred_T>
+	static bool wait_multiple(size_t n, sleep_queue** queues, const std::chrono::duration<rep, period>& timeout_duration, pred_T&& pred) {
+		auto t = tlb.current_thread;
+		std::vector<std::pair<std::unique_lock<std::mutex>, queue_unlinker>> locks_and_unlinkers;
+		for (size_t i = 0; i < n; ++i) {
+			locks_and_unlinkers.emplace_back(std::piecewise_construct, std::tie(queues[i]->mut), std::tie());
+		}
+		if (pred()) return true;
+		std::unique_lock<std::mutex> l(t->wait_mut);
+		for (size_t i = 0; i < n; ++i) {
+			auto& v = locks_and_unlinkers[i];
+			auto& q = queues[i]->queue;
+			v.second = queue_unlinker { q.insert(q.end(), *t) };
+			v.first.unlock();
+		}
+		return t->wait_cv.wait_for(l, timeout_duration, std::forward<pred_T>(pred));
+	}
+};
+
 struct event: object {
 	static const auto static_type = object::t_event;
 	bool manual_reset = false;
 	std::atomic<int> state { false };
-	std::mutex wait_mut;
-	std::condition_variable wait_cv;
+	sleep_queue queue;
 };
 
 
@@ -1030,16 +1151,10 @@ HANDLE WINAPI CreateEventA(void* security_attributes, BOOL manual_reset, BOOL in
 	e->state = initial_state;
 	log("CreateEventA '%s' %d %d -> %p\n", name, (int)manual_reset, (int)initial_state, (void*)e.h);
 	std::atomic_thread_fence(std::memory_order_release);
-	return e.release_HANDLE();
+	return open_handle(e);
 }
 
-struct thread: object {
-	static const auto static_type = object::t_thread;
-	DWORD id = 0;
-	std::thread thread_obj;
-	bool running = true;
-	DWORD exit_code = 259;
-};
+
 id_list<thread*, 0xffff> all_threads;
 
 handle<thread> new_thread() {
@@ -1054,9 +1169,9 @@ handle<thread> new_thread() {
 HANDLE default_process_heap = nullptr;
 
 void initialize_things() {
-	std_input_handle = new_console_handle(true, false).release_HANDLE();
-	std_output_handle = new_console_handle(false, true).release_HANDLE();
-	std_error_handle = new_console_handle(false, true).release_HANDLE();
+	std_input_handle = open_handle(new_console_handle(true, false));
+	std_output_handle = open_handle(new_console_handle(false, true));
+	std_error_handle = open_handle(new_console_handle(false, true));
 
 	default_process_heap = HeapCreate(0, 0, 0);
 	if (!default_process_heap) fatal_error("failed to create default process heap");
@@ -1101,7 +1216,7 @@ HANDLE WINAPI CreateThread(void* security_attributes, SIZE_T stack_size, void* s
 	});
 	if (thread_id) *thread_id = t->id;
 	std::atomic_thread_fence(std::memory_order_release);
-	return t.release_HANDLE();
+	return open_handle(t);
 }
 
 BOOL WINAPI SetThreadPriority(HANDLE h, int priority) {
@@ -1200,7 +1315,7 @@ HANDLE WINAPI CreateFileA(const char* filename, DWORD access, DWORD share_mode, 
 		return INVALID_HANDLE_VALUE;
 	}
 
-	auto s = path_to_native(filename);
+	auto s = get_native_path(filename);
 
 	log("native path '%s'\n", s);
 
@@ -1241,6 +1356,7 @@ HANDLE WINAPI CreateFileA(const char* filename, DWORD access, DWORD share_mode, 
 	}
 	native_api::file_io file_io;
 	if (!file_io.open(s.c_str(), file_access, open_mode)) {
+		log("failed to open file\n");
 		SetLastError(ERROR_FILE_NOT_FOUND);
 		return INVALID_HANDLE_VALUE;
 	}
@@ -1255,8 +1371,7 @@ HANDLE WINAPI CreateFileA(const char* filename, DWORD access, DWORD share_mode, 
 		return f->get_pos();
 	};
 	o->read = [f](void* buffer, size_t to_read, size_t* read) {
-		bool r = f->read(buffer, to_read);
-		*read = to_read;
+		bool r = f->read(buffer, to_read, read);
 		if (!r) {
 			SetLastError(ERROR_READ_FAULT);
 		}
@@ -1265,7 +1380,7 @@ HANDLE WINAPI CreateFileA(const char* filename, DWORD access, DWORD share_mode, 
 
 	log("create file ok\n");
 	std::atomic_thread_fence(std::memory_order_release);
-	return o.release_HANDLE();
+	return open_handle(o);
 }
 
 DWORD WINAPI SetFilePointer(HANDLE h, LONG move, LONG* move_high, MOVE_METHOD method) {
@@ -1317,9 +1432,161 @@ HANDLE WINAPI GetProcessHeap() {
 	return default_process_heap;
 }
 
+// Windows has some really weird wildcard matching. This is not probably not
+// accurate, but it supports at least some of the weird behavior.
+bool matches_file_pattern(const std::string& filename, const std::string& pattern) {
+	if (pattern == "*.*") return true;
+	const char* fc = filename.data();
+	const char* fe = fc + filename.size();
+	const char* pc = pattern.data();
+	const char* pe = pc + pattern.size();
+	while (pc != pe) {
+		char c = *pc;
+		if (fc == fe) {
+			if (c == '.' && pc + 1 != pe && (pc[1] == '?' || pc[1] == '>')) return true;
+			if (c == '?' || c == '>') return true;
+			if (c == '*' || c == '<') return true;
+			return false;
+		}
+		switch (c) {
+		case '?': case '>':
+			if (*fc == '.') {
+				while (true) {
+					++pc;
+					if (pc == pe) break;
+					if (*pc != '?' && *pc != '>') break;
+				}
+				if (pc != pe && *pc == '.') ++pc;
+			} else ++pc;
+			if (pc == pe) return true;
+			++fc;
+			break;
+		case '*': case '<':
+			++pc;
+			if (pc == pe) return true;
+			while ((*pc == '*' || *pc == '<' || *pc == '?' || *pc == '>') && pc != pe) ++pc;
+			c = *pc;
+			if (c == '"') c = '.';
+			while (true) {
+				++fc;
+				if (fc == fe) return pc + 1 == pe && c == '.';
+				if (*fc == c) break;
+			}
+			break;
+		case '"':
+			if (*fc != '.') return false;
+			++pc;
+			++fc;
+			break;
+		default:
+			if (*fc != c) return false;
+			++pc;
+			++fc;
+			break;
+		}
+	}
+	return fc == fe;
+}
+
+struct find_file {
+	static const uint32_t magic_value = 0x4801f7c2;
+	uint32_t magic = magic_value;
+	std::string pattern;
+	native_api::directory_io dir_io;
+};
+
+void copy_find_data(WIN32_FIND_DATAA* data, const native_api::directory_entry& e) {
+	data->dwFileAttributes = 0;
+	if (e.is_directory) data->dwFileAttributes |= 0x10;
+	data->ftCreationTime = time_point_to_FILETIME(e.creation_time);
+	data->ftLastAccessTime = time_point_to_FILETIME(e.access_time);
+	data->ftLastWriteTime = time_point_to_FILETIME(e.write_time);
+	data->nFileSizeHigh = (DWORD)(e.file_size >> 32);
+	data->nFileSizeLow = (DWORD)e.file_size;
+	data->dwReserved0 = 0;
+	data->dwReserved1 = 0;
+	size_t len = e.file_name.size();
+	if (len >= 260) len = 260 - 1;
+	memcpy(data->cFileName, e.file_name.data(), len);
+	data->cFileName[len] = 0;
+	len = e.file_name.size();
+	if (len >= 14) len = 14 - 1;
+	memcpy(data->cAlternateFileName, e.file_name.data(), len);
+	data->cAlternateFileName[len] = 0;
+}
+
 HANDLE WINAPI FindFirstFileA(const char* filename, WIN32_FIND_DATAA* data) {
-	log("find first file '%s'\n", filename);
-	return nullptr;
+	const char* last_slash = filename;
+	for (const char* c = filename; *c; ++c) {
+		if (*c == '/' || *c == '\\') last_slash = c;
+	}
+	if (!*(last_slash + 1)) {
+		SetLastError(ERROR_FILE_NOT_FOUND);
+		return INVALID_HANDLE_VALUE;
+	}
+	std::string pattern = last_slash + 1;
+	auto path = get_full_path(std::string(filename, last_slash));
+	auto native_path = get_native_path(path);
+	native_api::directory_io dir_io;
+	if (!dir_io.open(native_path.c_str())) {
+		SetLastError(ERROR_PATH_NOT_FOUND);
+		return INVALID_HANDLE_VALUE;
+	}
+	while (true) {
+		auto e = dir_io.get();
+		if (!dir_io.next()) break;
+		if (matches_file_pattern(e.file_name, pattern)) {
+			log("FindFirstFileA '%s': file found (%s)\n", filename, e.file_name);
+// 			auto o = new_object<find_file>();
+// 			if (!o) {
+// 				SetLastError(ERROR_NO_SYSTEM_RESOURCES);
+// 				return nullptr;
+// 			}
+			auto* o = new find_file();
+			o->pattern = std::move(pattern);
+			o->dir_io = std::move(dir_io);
+			std::atomic_thread_fence(std::memory_order_release);
+
+			copy_find_data(data, e);
+
+			log("returning file '%s' attribs %x\n", data->cFileName, data->dwFileAttributes);
+			return (HANDLE)o;
+			//return open_handle(o);
+		}
+	}
+	log("FindFirstFileA '%s': not found\n", filename);
+	SetLastError(ERROR_FILE_NOT_FOUND);
+	fatal_error("nay");
+	return INVALID_HANDLE_VALUE;
+}
+
+BOOL WINAPI FindNextFileA(HANDLE h, WIN32_FIND_DATAA* data) {
+// 	auto o = get_object<find_file>(h);
+// 	if (!o) {
+// 		SetLastError(ERROR_INVALID_HANDLE);
+// 		return FALSE;
+// 	}
+	auto* o = (find_file*)h;
+	while (true) {
+		auto e = o->dir_io.get();
+		if (!o->dir_io.next()) break;
+		if (matches_file_pattern(e.file_name, o->pattern)) {
+			copy_find_data(data, e);
+			log("returning file '%s' attribs %x\n", data->cFileName, data->dwFileAttributes);
+			return TRUE;
+		}
+	}
+	log("FindNextFile: not found\n");
+	SetLastError(ERROR_FILE_NOT_FOUND);
+	return FALSE;
+}
+
+BOOL WINAPI FindClose(HANDLE h) {
+	auto* o = (find_file*)h;
+	if (o->magic != o->magic_value) fatal_error("FindClose: invalid handle");
+	o->magic = ~o->magic_value;
+	delete o;
+	return TRUE;
 }
 
 enum WAIT_RETVAL : DWORD {
@@ -1328,6 +1595,14 @@ enum WAIT_RETVAL : DWORD {
 	WAIT_TIMEOUT = 0x102,
 	WAIT_FAILED = 0xffffffff
 };
+
+bool event_pred(event* e) {
+	auto val = e->state.load(std::memory_order_relaxed);
+	if (!val) return false;
+	if (e->manual_reset) return true;
+	if (e->state.compare_exchange_weak(val, false, std::memory_order_relaxed)) return true;
+	return false;
+}
 
 WAIT_RETVAL WINAPI WaitForSingleObject(HANDLE h, DWORD milliseconds) {
 	log("WaitForSingleObject %p %d\n", (void*)h, milliseconds);
@@ -1338,27 +1613,20 @@ WAIT_RETVAL WINAPI WaitForSingleObject(HANDLE h, DWORD milliseconds) {
 	}
 	if (o->object_type == object::t_event) {
 		event* e = (event*)o.get();
-		auto val = e->state.load(std::memory_order_relaxed);
-		if (val) {
-			if (e->state.compare_exchange_weak(val, true, std::memory_order_relaxed)) {
-				return WAIT_OBJECT_0;
-			}
+		auto pred = std::bind(event_pred, e);
+		auto* t = tlb.current_thread;
+		if (pred()) { 
+			log("thread %#x did not have to wait for event %p\n", t->id, (void*)h);
+			return WAIT_OBJECT_0;
 		}
-		auto t = tlb.current_thread;
-		std::unique_lock<std::mutex> l(e->wait_mut);
-		if (e->state.load(std::memory_order_relaxed)) return WAIT_OBJECT_0;
 		log("thread %#x is waiting for event %p\n", t->id, (void*)h);
-		auto pred = [e, t]() {
-			auto val = e->state.load(std::memory_order_relaxed);
-			if (!val) return false;
-			if (e->manual_reset) return true;
-			if (e->state.compare_exchange_weak(val, false, std::memory_order_relaxed)) return true;
-			return false;
-		};
 		if (milliseconds == (DWORD)-1) {
-			e->wait_cv.wait(l, pred);
+			e->queue.wait(pred);
 		} else {
-			e->wait_cv.wait_for(l, std::chrono::milliseconds(milliseconds), pred);
+			if (!e->queue.wait_for(std::chrono::milliseconds(milliseconds), pred)) {
+				log("thread %#x timed out from waiting for event %p\n", t->id, (void*)h);
+				return WAIT_TIMEOUT;
+			}
 		}
 		log("thread %#x woke up from waiting for event %p\n", t->id, (void*)h);
 		return WAIT_OBJECT_0;
@@ -1367,6 +1635,72 @@ WAIT_RETVAL WINAPI WaitForSingleObject(HANDLE h, DWORD milliseconds) {
 		SetLastError(ERROR_NOT_SUPPORTED);
 		return WAIT_FAILED;
 	}
+}
+
+DWORD WINAPI WaitForMultipleObjects(DWORD count, const HANDLE* input_handles, BOOL wait_for_all, DWORD milliseconds) {
+	if (count == 0 || count > 64) {
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return WAIT_FAILED;
+	}
+	size_t n = (size_t)count;
+	for (size_t i = 0; i < n; ++i) {
+		for (size_t i2 = i + 1; i2 < n; ++i2) {
+			if (input_handles[i] == input_handles[i2]) {
+				SetLastError(ERROR_INVALID_PARAMETER);
+				return WAIT_FAILED;
+			}
+		}
+	}
+	std::array<handle<object>, 64> handles;
+	std::array<sleep_queue*, 64> queues;
+	std::array<std::pair<object*, bool>, 64> objects;
+	for (size_t i = 0; i < n; ++i) {
+		auto o = get_object<object>(input_handles[i]);
+		if (!o) {
+			SetLastError(ERROR_INVALID_HANDLE);
+			return WAIT_FAILED;
+		}
+		if (o->object_type == object::t_event) {
+			queues[i] = &((event&)*o).queue;
+			objects[i] = { &*o, false };
+			handles[i] = std::move(o);
+		} else {
+			log("WaitForMultipleObjects: object_type %d not supported\n", (int)o->object_type);
+			SetLastError(ERROR_NOT_SUPPORTED);
+			return WAIT_FAILED;
+		}
+	}
+	auto* t = tlb.current_thread;
+	log("thread %#x is waiting for multiple objects\n", t->id);
+	size_t n_signalled = 0;
+	size_t req_signalled = wait_for_all ? n : 1;
+	size_t first_signalled = 0;
+	auto pred = [&objects, n, &n_signalled, &first_signalled, req_signalled]() {
+		for (size_t i = 0; i < n; ++i) {
+			auto& v = objects[i];
+			if (v.second) continue;
+			auto* o = v.first;
+			if (o->object_type == object::t_event) {
+				if (event_pred((event*)&*o)) {
+					v.second = true;
+					if (n_signalled == 0) first_signalled = i;
+					++n_signalled;
+				}
+			}
+		}
+		return n_signalled >= req_signalled;
+	};
+	std::chrono::milliseconds timeout_duration(milliseconds);
+	if (milliseconds == (DWORD)-1) timeout_duration = std::chrono::hours(1);
+	if (!sleep_queue::wait_multiple(n, queues.data(), timeout_duration, pred)) {
+		log("thread %#x timed out from waiting for multiple objects\n", t->id);
+		return WAIT_TIMEOUT;
+	}
+
+	DWORD retval = wait_for_all ? WAIT_OBJECT_0 : WAIT_OBJECT_0 + first_signalled;
+
+	log("thread %#x woke up from waiting for multiple objects\n", t->id);
+	return retval;
 }
 
 void WINAPI Sleep(DWORD milliseconds) {
@@ -1380,16 +1714,41 @@ BOOL WINAPI SetEvent(HANDLE h) {
 		SetLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-	std::unique_lock<std::mutex> l(o->wait_mut);
 	o->state.store(true, std::memory_order_relaxed);
-	o->wait_cv.notify_all();
+	o->queue.notify_all();
 	return TRUE;
 }
 
-void CloseHandle(HANDLE h) {
+BOOL WINAPI CloseHandle(HANDLE h) {
 	log("CloseHandle %p\n", (void*)h);
 	auto o = get_object<object>(h);
-	fatal_error("fixme close %s", typeid(*o).name());
+	if (!o) {
+		log("CloseHandle %p: invalid handle\n", (void*)h);
+		SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	handle_container* c;
+	size_t index;
+	std::tie(c, index) = container_and_index_for_HANDLE(h);
+	if (!c) fatal_error("CloseHandle: no container for HANDLE %p\n", (void*)h);
+	if (c->refcounts[index].load(std::memory_order_relaxed) < 2) fatal_error("CloseHandle: handle refcount is < 2");
+	bool already_closed = c->handle_is_closed[index].test_and_set(std::memory_order_relaxed);
+	if (already_closed) {
+		log("CloseHandle %s %p: already closed\n", typeid(*o).name(), (void*)h);
+		SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	deref_handle(c, index);
+	return TRUE;
+}
+
+uintptr_t encode_pointer_value = 0x12345678;
+
+void* WINAPI EncodePointer(void* ptr) {
+	return (void*)((uintptr_t)ptr ^ encode_pointer_value);
+}
+void* WINAPI DecodePointer(void* ptr) {
+	return (void*)((uintptr_t)ptr ^ encode_pointer_value);
 }
 
 register_funcs funcs({
@@ -1400,6 +1759,7 @@ register_funcs funcs({
 	{ "kernel32:GetModuleHandleA", GetModuleHandleA },
 	{ "kernel32:GetProcAddress", GetProcAddress },
 	{ "kernel32:LoadLibraryA", LoadLibraryA },
+	{ "kernel32:FreeLibrary", FreeLibrary },
 	{ "kernel32:HeapCreate", HeapCreate },
 	{ "kernel32:HeapAlloc", HeapAlloc },
 	{ "kernel32:HeapFree", HeapFree },
@@ -1452,11 +1812,16 @@ register_funcs funcs({
 	{ "kernel32:ReadFile", ReadFile },
 	{ "kernel32:InterlockedIncrement", InterlockedIncrement },
 	{ "kernel32:GetProcessHeap", GetProcessHeap },
-	//{ "kernel32:FindFirstFileA", FindFirstFileA },
+	{ "kernel32:FindFirstFileA", FindFirstFileA },
+	{ "kernel32:FindNextFileA", FindNextFileA },
+	{ "kernel32:FindClose", FindClose },
 	{ "kernel32:WaitForSingleObject", WaitForSingleObject },
+	{ "kernel32:WaitForMultipleObjects", WaitForMultipleObjects },
 	{ "kernel32:Sleep", Sleep },
 	{ "kernel32:SetEvent", SetEvent },
 	{ "kernel32:CloseHandle", CloseHandle },
+	{ "kernel32:EncodePointer", EncodePointer },
+	{ "kernel32:DecodePointer", DecodePointer },
 });
 
 

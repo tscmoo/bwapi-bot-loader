@@ -2,6 +2,7 @@
 #define KERNEL32_H
 
 #include "wintypes.h"
+#include "environment.h"
 
 #include <string>
 #include <functional>
