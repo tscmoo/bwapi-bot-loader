@@ -50,10 +50,13 @@ namespace wintypes {
 		ERROR_READ_FAULT = 30,
 		ERROR_NOT_SUPPORTED = 50,
 		ERROR_INVALID_PARAMETER = 87,
+		ERROR_OPEN_FAILED = 110,
 		ERROR_INSUFFICIENT_BUFFER = 122,
 		ERROR_MOD_NOT_FOUND = 126,
 		ERROR_PROC_NOT_FOUND = 127,
+		ERROR_NOT_OWNER = 288,
 		ERROR_INVALID_ADDRESS = 487,
+		ERROR_FILE_INVALID = 1006,
 		ERROR_NO_SYSTEM_RESOURCES = 1450
 	};
 
@@ -201,11 +204,12 @@ namespace wintypes {
 		ULONG_PTR SpinCount;
 	};
 
-	struct STARTUPINFOA {
+	template<typename char_T>
+	struct STARTUPINFOT {
 		DWORD cb;
-		const char* lpReserved;
-		const char* lpDesktop;
-		const char* lpTitle;
+		const char_T* lpReserved;
+		const char_T* lpDesktop;
+		const char_T* lpTitle;
 		DWORD dwX;
 		DWORD dwY;
 		DWORD dwXSize;
@@ -221,6 +225,8 @@ namespace wintypes {
 		HANDLE hStdOutput;
 		HANDLE hStdError;
 	};
+	using STARTUPINFOA = STARTUPINFOT<char>;
+	using STARTUPINFOW = STARTUPINFOT<char16_t>;
 
 	struct MEMORY_BASIC_INFORMATION {
 		void* BaseAddress;
@@ -335,6 +341,13 @@ namespace wintypes {
 	struct POINT {
 		LONG x;
 		LONG y;
+	};
+
+	struct alignas(8) SLIST_HEADER {
+		uint64_t value;
+	};
+	struct alignas(8) SLIST_ENTRY {
+		SLIST_ENTRY* next;
 	};
 
 };

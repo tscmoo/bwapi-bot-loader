@@ -94,7 +94,49 @@ namespace native_api {
 		bool next();
 	};
 
-	int32_t interlocked_increment(int32_t*);
+	int32_t fetch_add(int32_t*);
+	bool compare_exchange(int64_t* pointer, int64_t& expected, int64_t desired);
+
+	template<size_t size, size_t alignment> struct atomic_type;
+	template<size_t alignment>
+	struct atomic_type<4, alignment> {
+		using type = typename std::enable_if<alignment <= 4 && (alignment & (alignment - 1)) == 0, int32_t>::type;
+	};
+	template<size_t alignment>
+	struct atomic_type<8, alignment> {
+		using type = typename std::enable_if<alignment <= 8 && (alignment & (alignment - 1)) == 0, int64_t>::type;
+	};
+
+	template<typename T>
+	struct atomic_type_for {
+		using type = typename std::enable_if<std::is_trivially_copyable<T>::value, typename atomic_type<sizeof(T), alignof(T)>::type>::type;
+		static_assert(sizeof(type) == sizeof(T) && alignof(T) <= alignof(type), "type size/alignment mismatch");
+	};
+
+	template<typename T, typename atomic_type_for<T>::type* = nullptr>
+	bool compare_exchange(T* pointer, T& expected, const T& desired) {
+		using AT = typename atomic_type_for<T>::type;
+		return compare_exchange((AT*)pointer, (AT&)expected, (const AT&)desired);
+	}
+
+	struct shm_io_impl;
+
+	enum {
+		shm_io_read = 1,
+		shm_io_write = 2,
+		shm_io_copy_on_write = 4,
+	};
+
+	struct shm_io {
+		std::unique_ptr<shm_io_impl> impl;
+	public:
+		shm_io();
+		shm_io(shm_io&& n);
+		~shm_io();
+		shm_io& operator=(shm_io&& n);
+		bool open(const char* fn, uint64_t size);
+		void* map(void* addr, uint64_t offset, size_t size, int flags);
+	};
 
 };
 

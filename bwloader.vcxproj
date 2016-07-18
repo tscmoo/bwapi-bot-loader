@@ -58,7 +58,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <BaseAddress>0x200000</BaseAddress>
+      <BaseAddress>0x100000</BaseAddress>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <FixedBaseAddress>true</FixedBaseAddress>
     </Link>
@@ -92,6 +92,7 @@
     <ClCompile Include="native_api.cpp" />
     <ClCompile Include="user32.cpp" />
     <ClCompile Include="version.cpp" />
+    <ClCompile Include="ws2_32.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="environment.h" />

@@ -19,7 +19,7 @@ namespace kernel32 {
 
 	void add_virtual_region(void* addr, size_t size, MEM_STATE state, PAGE_PROTECT protect);
 
-	extern std::string cmdline;
+	void set_cmdline(const std::string& str);
 
 	void* virtual_allocate(void* addr, size_t size, MEM_STATE allocation_type, PAGE_PROTECT protect, void* preferred_addr = nullptr);
 	void virtual_deallocate(void* addr);
@@ -29,6 +29,7 @@ namespace kernel32 {
 	void WINAPI SetLastError(DWORD err);
 	DWORD WINAPI GetLastError();
 	DWORD WINAPI GetCurrentThreadId();
+	void WINAPI Sleep(DWORD milliseconds);
 }
 
 #endif

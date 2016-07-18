@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 
 static std::chrono::system_clock::time_point FILETIME_to_time_point(uint64_t time) {
 	auto r = std::chrono::system_clock::from_time_t(0);
@@ -122,21 +123,67 @@ struct directory_io_impl {
 };
 
 template<typename T, typename std::enable_if<sizeof(T) == sizeof(long)>::type* = nullptr>
-T interlocked_increment(T* ptr) {
-	return _InterlockedIncrement((long*)ptr);
+T fetch_add(T* ptr) {
+	return _InterlockedIncrement((long*)ptr) - 1;
 }
 
-int32_t interlocked_increment(int32_t* ptr) {
-	return interlocked_increment<int32_t>(ptr);
+int32_t fetch_add(int32_t* ptr) {
+	return fetch_add<int32_t>(ptr);
 }
+
+template<typename T, typename std::enable_if<sizeof(T) == sizeof(long)>::type* = nullptr>
+bool compare_exchange_impl(T* ptr, T& expected, T desired) {
+	auto old_expected = expected;
+	return (expected = _InterlockedCompareExchange((long*)ptr, (long)desired, (long)expected)) == old_expected;
+}
+
+template<typename T, typename std::enable_if<sizeof(T) == sizeof(long long)>::type* = nullptr>
+bool compare_exchange_impl(T* ptr, T& expected, T desired) {
+	auto old_expected = expected;
+	return (expected = _InterlockedCompareExchange64((long long*)ptr, (long long)desired, (long long)expected)) == old_expected;
+}
+
+bool compare_exchange(int32_t* ptr, int32_t& expected, int32_t desired) {
+	return compare_exchange_impl<int32_t>(ptr, expected, desired);
+}
+
+bool compare_exchange(int64_t* ptr, int64_t& expected, int64_t desired) {
+	return compare_exchange_impl<int64_t>(ptr, expected, desired);
+}
+
+struct shm_io_impl {
+	HANDLE h;
+	shm_io_impl() {
+		h = nullptr;
+	}
+	~shm_io_impl() {
+		if (h) CloseHandle(h);
+	}
+	bool open(const char* fn, uint64_t size) {
+		std::string str_fn = "Global\\";
+		str_fn += fn;
+		h = CreateFileMappingA(nullptr, nullptr, PAGE_READWRITE, size >> 32, (DWORD)size, str_fn.c_str());
+		return h != nullptr;
+	}
+	void* map(void* addr, uint64_t offset, size_t size, int flags) {
+		DWORD access = 0;
+		if (flags & shm_io_read) access |= FILE_MAP_READ;
+		if (flags & shm_io_write) access |= FILE_MAP_WRITE;
+		if (flags & shm_io_copy_on_write) access |= FILE_MAP_COPY;
+		return MapViewOfFileEx(h, access, offset >> 32, (DWORD)offset, size, addr);
+	}
+};
 
 }
 
 #else
 
+#include <sys/types.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
 
 namespace native_api {
 ;
@@ -214,13 +261,68 @@ struct file_io_impl {
 	}
 };
 
+struct directory_io_impl {
+	std::string path;
+	DIR* dir = nullptr;
+	struct stat st;
+	union {
+		dirent d;
+		char b[offsetof(dirent, d_name) + NAME_MAX + 1];
+	} ent;
+	directory_io_impl() {
+	}
+	~directory_io_impl() {
+		if (dir) closedir(dir);
+	}
+	bool open(const char* fn) {
+		dir = opendir(fn);
+		if (dir) {
+			path = fn;
+			next();
+		}
+		return dir != nullptr;
+	}
+	bool next() {
+		dirent* res = nullptr;
+		if (readdir_r(dir, &ent.d, &res) == 0) {
+			return stat((path + ent.d.d_name).c_str(), &st) == 0;
+		}
+		return false;
+	}
+	directory_entry get() {
+		directory_entry r;
+		r.file_name = ent.d.d_name;
+		r.creation_time = std::chrono::system_clock::from_time_t(st.st_ctime);
+		r.access_time = std::chrono::system_clock::from_time_t(st.st_atime);
+		r.write_time = std::chrono::system_clock::from_time_t(st.st_mtime);
+		r.file_size = st.st_size;
+		r.is_directory = (st.st_mode & S_IFDIR) != 0;
+		return r;
+	}
+};
+
 template<typename T>
-T interlocked_increment(T* ptr) {
-	return __sync_fetch_and_add(ptr, 1) + 1;
+T fetch_add(T* ptr) {
+	return __sync_fetch_and_add(ptr, 1);
 }
 
-int32_t interlocked_increment(int32_t* ptr) {
-	return interlocked_increment<int32_t>(ptr);
+int32_t fetch_add(int32_t* ptr) {
+	return fetch_add<int32_t>(ptr);
+}
+
+template<typename T>
+bool compare_exchange_impl(T* ptr, T& expected, T desired) {
+	bool r = __sync_bool_compare_and_swap(ptr, expected, desired);
+	if (r) expected = desired;
+	return r;
+}
+
+bool compare_exchange(int32_t* ptr, int32_t& expected, int32_t desired) {
+	return compare_exchange_impl<int32_t>(ptr, expected, desired);
+}
+
+bool compare_exchange(int64_t* ptr, int64_t& expected, int64_t desired) {
+	return compare_exchange_impl<int64_t>(ptr, expected, desired);
 }
 
 
@@ -266,6 +368,20 @@ directory_entry directory_io::get() {
 }
 bool directory_io::next() {
 	return impl->next();
+}
+
+shm_io::shm_io() {
+	impl = std::make_unique<shm_io_impl>();
+}
+shm_io::shm_io(shm_io&& n) = default;
+shm_io::~shm_io() {
+}
+shm_io& shm_io::operator=(shm_io&& n) = default;
+bool shm_io::open(const char* fn, uint64_t size) {
+	return impl->open(fn, size);
+}
+void* shm_io::map(void* addr, uint64_t offset, size_t size, int flags) {
+	return impl->map(addr, offset, size, flags);
 }
 
 }

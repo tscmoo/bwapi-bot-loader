@@ -1,3 +1,4 @@
+#include "kernel32.h"
 #include "environment.h"
 #include "wintypes.h"
 using namespace wintypes;
@@ -19,6 +20,7 @@ using namespace wintypes;
 #include <array>
 #include <memory>
 #include <condition_variable>
+#include <random>
 
 namespace kernel32 {
 ;
@@ -91,11 +93,28 @@ HMODULE WINAPI GetModuleHandleA(const char* name) {
 	auto* i = name ? modules::get_module_info(name) : main_module_info;
 	if (!i) {
 		log("module '%s' not found\n", name);
+		fatal_error("'%s' not found", name);
 		SetLastError(ERROR_MOD_NOT_FOUND);
 		return nullptr;
 	}
 	log("module '%s' is at %p\n", name, i->base);
 	return i->base;
+}
+
+BOOL WINAPI GetModuleHandleExA(DWORD flags, const char* name, HMODULE* out_module) {
+	*out_module = nullptr;
+	if (flags & 4) {
+		fatal_error("fixme: GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS");
+	}
+	auto* i = name ? modules::get_module_info(name) : main_module_info;
+	if (!i) {
+		log("ex module '%s' not found\n", name);
+		//fatal_error("'%s' not found retaddr %p", name, _ReturnAddress());
+		SetLastError(ERROR_MOD_NOT_FOUND);
+		return FALSE;
+	}
+	*out_module = i->base;
+	return TRUE;
 }
 
 void* WINAPI GetProcAddress(HMODULE hm, const char* name) {
@@ -107,6 +126,7 @@ void* WINAPI GetProcAddress(HMODULE hm, const char* name) {
 	}
 	bool is_ordinal = (uintptr_t)name < 0x10000;
 	DWORD ordinal = (uintptr_t)name & 0xffff;
+	if (is_ordinal) name = "(ordinal)";
 	if (is_ordinal) {
 		size_t index = (size_t)ordinal - i->ordinal_base;
 		if (index < i->exports.size()) {
@@ -131,8 +151,8 @@ void* WINAPI GetProcAddress(HMODULE hm, const char* name) {
 	std::string override_name;
 	if (is_ordinal) override_name = format("%s:ordinal %d", i->lcase_name_no_ext, ordinal);
 	else override_name = format("%s:%s", i->lcase_name_no_ext, name);
-	void* r = get_implemented_function(override_name);
-	if (!r) r = get_unimplemented_stub(override_name);
+	void* r = environment::get_implemented_function(override_name);
+	//if (!r) r = environment::get_unimplemented_stub(override_name);
 	log("GetProcAddress: %p::%s (%s) -> %p\n", hm, name, override_name, r);
 	if (!r) {
 		SetLastError(ERROR_PROC_NOT_FOUND);
@@ -141,7 +161,7 @@ void* WINAPI GetProcAddress(HMODULE hm, const char* name) {
 }
 
 HMODULE WINAPI LoadLibraryA(const char* name) {
-	auto* i = modules::load_library(name, false);
+	auto* i = modules::load_library(name, false, false);
 	if (!i) {
 		SetLastError(ERROR_FILE_NOT_FOUND);
 		return nullptr;
@@ -150,6 +170,30 @@ HMODULE WINAPI LoadLibraryA(const char* name) {
 	return i->base;
 }
 
+HMODULE WINAPI LoadLibraryExA(const char* name, HANDLE h_reserved, DWORD flags) {
+	//fatal_error("LoadLibraryEx: name '%s', h_reserved %p, flags %x\n", name, h_reserved, flags);
+	auto* i = modules::load_library(name, false, false);
+	if (!i) {
+		SetLastError(ERROR_FILE_NOT_FOUND);
+		return nullptr;
+	}
+	log("LoadLibraryEx %s -> %p\n", name, i->base);
+	return i->base;
+}
+
+
+// HMODULE WINAPI LoadLibraryExW(const char16_t* name, HANDLE h_reserved, DWORD flags) {
+// 	fatal_error("LoadLibraryExW: name '%s', h_reserved %p, flags %x\n", utf16_to_utf8(name), h_reserved, flags);
+// 	auto name_utf8 = utf16_to_utf8(name);
+// 	auto* i = modules::load_library(name_utf8.c_str(), false, false);
+// 	if (!i) {
+// 		SetLastError(ERROR_FILE_NOT_FOUND);
+// 		return nullptr;
+// 	}
+// 	log("LoadLibraryExW %s -> %p\n", name_utf8, i->base);
+// 	return i->base;
+// }
+
 BOOL WINAPI FreeLibrary(HMODULE h) {
 	auto* i = modules::get_module_info(h);
 	if (!i) {
@@ -157,7 +201,7 @@ BOOL WINAPI FreeLibrary(HMODULE h) {
 		SetLastError(ERROR_MOD_NOT_FOUND);
 		return FALSE;
 	}
-	log("FreeLibrary: not supported");
+	log("FreeLibrary (%s): not supported\n", i->name);
 	return TRUE;
 }
 
@@ -215,7 +259,7 @@ public:
 static const size_t npos = (size_t)-1;
 
 struct object {
-	enum { t_invalid, t_thread, t_event, t_file };
+	enum { t_invalid, t_thread, t_event, t_file, t_mutex, t_file_mapping };
 	virtual ~object() {}
 	int object_type = t_invalid;
 	std::atomic<size_t> refcount { 0 };
@@ -629,6 +673,11 @@ void WINAPI GetStartupInfoA(STARTUPINFOA* i) {
 	i->cb = sizeof(STARTUPINFOA);
 }
 
+void WINAPI GetStartupInfoW(STARTUPINFOW* i) {
+	memset(i, 0, sizeof(*i));
+	i->cb = sizeof(STARTUPINFOW);
+}
+
 struct file : object {
 	static const auto static_type = object::t_file;
 	DWORD access = 0;
@@ -677,21 +726,22 @@ UINT WINAPI SetHandleCount(UINT n) {
 }
 
 struct page_attributes {
-	DWORD protect = 0;
-	DWORD state = 0;
+	bool was_ever_committed = false;
+	PAGE_PROTECT protect = (PAGE_PROTECT)0;
+	MEM_STATE state = (MEM_STATE)0;
 };
 
 struct virtual_region {
 	void* base;
 	size_t size;
 	std::vector<page_attributes> pages;
-	DWORD allocation_protect;
+	PAGE_PROTECT allocation_protect;
 };
 std::map<void*, virtual_region> virtual_regions;
 std::mutex virtual_mut;
 size_t vm_total_allocated = 0;
 
-void add_virtual_region_nolock(void* addr, size_t size, DWORD state, PAGE_PROTECT protect) {
+void add_virtual_region_nolock(void* addr, size_t size, MEM_STATE state, PAGE_PROTECT protect) {
 	if ((uintptr_t)addr & 0xfff) fatal_error("attempt to add virtual region not on page boundary");
 	size = (size + 0xfff) & ~0xfff;
 	log("add virtual region [%p, %p)\n", addr, (char*)addr + size);
@@ -830,6 +880,12 @@ void* virtual_allocate_nolock(void* addr, size_t size, MEM_STATE allocation_type
 // 	for (auto& v : virtual_regions) {
 // 		log(" [%p, %p)\n", v.second.base, (uint8_t*)v.second.base + v.second.size);
 // 	}
+	if (ptr && (protect == PAGE_READONLY || protect == PAGE_READWRITE)) {
+		for (size_t i = 0; i < size; ++i) {
+			char* p = (char*)ptr;
+			if (p[i]) fatal_error("waa");
+		}
+	}
 	return ptr;
 }
 void virtual_deallocate_nolock(virtual_region* r) {
@@ -878,12 +934,19 @@ SIZE_T WINAPI VirtualQuery(void* addr, MEMORY_BASIC_INFORMATION* buffer, size_t 
 	}
 	uintptr_t offset = ((uintptr_t)addr - (uintptr_t)r->base) & ~0xfff;
 	size_t page = offset / 0x1000;
+	auto state = r->pages[page].state;
+	auto protect = r->pages[page].protect;
+	size_t pages = 1;
+	for (size_t i = page + 1; i != r->pages.size(); ++i) {
+		if (r->pages[page].state != state || r->pages[page].protect != protect) break;
+		++pages;
+	}
 	buffer->BaseAddress = (uint8_t*)r->base + offset;
 	buffer->AllocationBase = r->base;
 	buffer->AllocationProtect = r->allocation_protect;
-	buffer->RegionSize = 0x1000;
-	buffer->State = r->pages[page].state;
-	buffer->Protect = r->pages[page].protect;
+	buffer->RegionSize = 0x1000 * pages;
+	buffer->State = state;
+	buffer->Protect = protect;
 	buffer->Type = 0x20000;
 	return sizeof(*buffer);
 }
@@ -917,7 +980,15 @@ void* WINAPI VirtualAlloc(void* addr, SIZE_T size, DWORD allocation_type, PAGE_P
 				size_t p = page + i;
 
 				if (r->pages[p].state == MEM_RESERVE) {
-					native_api::set_memory_access((uint8_t*)r->base + p * 0x1000, 0x1000, access);
+					if (r->pages[p].was_ever_committed && access != native_api::memory_access::read_write && access != native_api::memory_access::read_write_execute) {
+						native_api::set_memory_access((uint8_t*)r->base + p * 0x1000, 0x1000, native_api::memory_access::read_write);
+						memset((uint8_t*)r->base + p * 0x1000, 0, 0x1000);
+						native_api::set_memory_access((uint8_t*)r->base + p * 0x1000, 0x1000, access);
+					} else {
+						native_api::set_memory_access((uint8_t*)r->base + p * 0x1000, 0x1000, access);
+						if (r->pages[p].was_ever_committed) memset((uint8_t*)r->base + p * 0x1000, 0, 0x1000);
+					}
+					r->pages[p].was_ever_committed = true;
 					r->pages[p].state = MEM_COMMIT;
 					r->pages[p].protect = protect;
 					log("committed a page\n");
@@ -976,7 +1047,7 @@ BOOL WINAPI VirtualFree(void* addr, SIZE_T size, FREE_TYPE free_type) {
 		return TRUE;
 	} else if (free_type == MEM_RELEASE) {
 		if (size || addr != r->base) {
-			SetLastError(ERROR_INVALID_PARAMETER);
+			SetLastError(ERROR_INVALID_ADDRESS);
 			return FALSE;
 		}
 		virtual_deallocate_nolock(r);
@@ -985,6 +1056,17 @@ BOOL WINAPI VirtualFree(void* addr, SIZE_T size, FREE_TYPE free_type) {
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
+}
+
+BOOL WINAPI VirtualLock(void* addr, SIZE_T size) {
+	log("VirtualLock: not supported\n");
+	SetLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
+BOOL WINAPI VirtualUnlock(void* addr, SIZE_T size) {
+	log("VirtualUnlock: not supported\n");
+	SetLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
 }
 
 LONG WINAPI UnhandledExceptionFilter(EXCEPTION_POINTERS* info) {
@@ -997,9 +1079,19 @@ void* WINAPI SetUnhandledExceptionFilter(void* func) {
 }
 
 std::string cmdline;
+std::u16string cmdlinew;
+
+void set_cmdline(const std::string& str) {
+	cmdline = str;
+	cmdlinew = utf8_to_utf16(str);
+}
 
 const char* WINAPI GetCommandLineA() {
 	return cmdline.c_str();
+}
+
+const char16_t* WINAPI GetCommandLineW() {
+	return cmdlinew.c_str();
 }
 
 const int16_t env_strings[] = { 0, 0 };
@@ -1008,18 +1100,24 @@ const int16_t* WINAPI GetEnvironmentStringsW() {
 	return env_strings;
 }
 
-int WINAPI WideCharToMultiByte(UINT code_page, DWORD flags, int16_t* widestr, int widelen, char* outstr, int outlen, const char* default_char, BOOL* used_default_char) {
+int WINAPI WideCharToMultiByte(UINT code_page, DWORD flags, char16_t* widestr, int widelen, char* outstr, int outlen, const char* default_char, BOOL* used_default_char) {
 	if (used_default_char) *used_default_char = FALSE;
 	if (widelen == -1) {
 		widelen = 0;
-		for (int16_t* p = widestr; *p; ++p, ++widelen);
+		for (auto* p = widestr; *p; ++p, ++widelen);
+		++widelen;
 	}
+	bool include_null = widestr[widelen] == 0;
+	auto s = utf16_to_utf8(std::u16string(widestr, widelen));
 	if (outlen == 0) return widelen;
-	for (int i = 0; i < widelen; ++i) {
-		if (outlen <= i) return i;
-		outstr[i] = (char)widestr[i];
+	int reqlen = s.size();
+	if (include_null) ++reqlen;
+	if (outlen < reqlen) {
+		SetLastError(ERROR_INSUFFICIENT_BUFFER);
+		return 0;
 	}
-	return widelen;
+	memcpy(outstr, s.data(), reqlen);
+	return reqlen;
 }
 
 BOOL WINAPI FreeEnvironmentStringsW(int16_t*) {
@@ -1035,9 +1133,41 @@ BOOL WINAPI GetCPInfo(UINT code_page, CPINFO* info) {
 	return FALSE;
 }
 
+enum processor_feature {
+	PF_FLOATING_POINT_EMULATED = 1,
+	PF_COMPARE_EXCHANGE_DOUBLE = 2,
+	PF_MMX_INSTRUCTIONS_AVAILABLE = 3,
+	PF_XMMI_INSTRUCTIONS_AVAILABLE = 6,
+	PF_RDTSC_INSTRUCTION_AVAILABLE = 8,
+	PF_PAE_ENABLED = 9,
+	PF_XMMI64_INSTRUCTIONS_AVAILABLE = 10,
+	PF_SSE3_INSTRUCTIONS_AVAILABLE = 13,
+	PF_COMPARE_EXCHANGE128 = 14,
+	PF_XSAVE_ENABLED = 17,
+};
+
+std::array<bool, 32> processor_features {};
+
+void set_processor_features() {
+	uint32_t regs[4];
+	environment::cpuid(0, 0, regs);
+	if (regs[0] >= 1) {
+		environment::cpuid(1, 0, regs);
+		processor_features[PF_FLOATING_POINT_EMULATED] = ~regs[3] & 1;
+		processor_features[PF_RDTSC_INSTRUCTION_AVAILABLE] = (regs[3] >> 4) & 1;
+		processor_features[PF_PAE_ENABLED] = (regs[3] >> 6) & 1;
+		processor_features[PF_COMPARE_EXCHANGE_DOUBLE] = (regs[3] >> 8) & 1;
+		processor_features[PF_MMX_INSTRUCTIONS_AVAILABLE] = (regs[3] >> 23) & 1;
+		processor_features[PF_XMMI_INSTRUCTIONS_AVAILABLE] = (regs[3] >> 25) & 1;
+		processor_features[PF_XMMI64_INSTRUCTIONS_AVAILABLE] = (regs[3] >> 26) & 1;
+		processor_features[PF_SSE3_INSTRUCTIONS_AVAILABLE] = (regs[2] >> 0) & 1;
+		processor_features[PF_XSAVE_ENABLED] = (regs[2] >> 27) & 1;
+		processor_features[PF_COMPARE_EXCHANGE128] = (regs[2] >> 13) & 1;
+	}
+}
+
 BOOL WINAPI IsProcessorFeaturePresent(DWORD feature) {
-	if (feature == 10) return TRUE;
-	if (feature != 0) fatal_error("check for processor feature %d", feature);
+	if (feature < processor_features.size()) return processor_features[feature] ? TRUE : FALSE;
 	return FALSE;
 }
 
@@ -1053,7 +1183,7 @@ std::chrono::high_resolution_clock clock;
 auto start_time = clock.now();
 
 DWORD WINAPI GetTickCount() {
-	return std::chrono::duration_cast<std::chrono::duration<DWORD, std::ratio<1, 1000>>>(clock.now() - start_time).count();
+	return std::chrono::duration_cast<std::chrono::duration<DWORD, std::ratio<1, 1000>>>(clock.now() - start_time).count() + 600000;
 }
 
 BOOL WINAPI QueryPerformanceCounter(uint64_t* count) {
@@ -1175,6 +1305,8 @@ void initialize_things() {
 
 	default_process_heap = HeapCreate(0, 0, 0);
 	if (!default_process_heap) fatal_error("failed to create default process heap");
+
+	set_processor_features();
 }
 
 void enter_main_thread(const std::function<void()>& f) {
@@ -1425,7 +1557,7 @@ BOOL WINAPI ReadFile(HANDLE h, void* buffer, DWORD to_read, DWORD* read, void* o
 }
 
 LONG WINAPI InterlockedIncrement(LONG* value) {
-	return native_api::interlocked_increment(value);
+	return native_api::fetch_add(value) + 1;
 }
 
 HANDLE WINAPI GetProcessHeap() {
@@ -1535,44 +1667,38 @@ HANDLE WINAPI FindFirstFileA(const char* filename, WIN32_FIND_DATAA* data) {
 	while (true) {
 		auto e = dir_io.get();
 		if (!dir_io.next()) break;
-		if (matches_file_pattern(e.file_name, pattern)) {
-			log("FindFirstFileA '%s': file found (%s)\n", filename, e.file_name);
-// 			auto o = new_object<find_file>();
-// 			if (!o) {
-// 				SetLastError(ERROR_NO_SYSTEM_RESOURCES);
-// 				return nullptr;
-// 			}
+		bool m = matches_file_pattern(e.file_name, pattern);
+		log("match '%s' pattern '%s' ? %d\n", e.file_name, pattern, m);
+		if (m) {
+			log("FindFirstFile '%s': file found (%s)\n", filename, e.file_name);
 			auto* o = new find_file();
 			o->pattern = std::move(pattern);
 			o->dir_io = std::move(dir_io);
-			std::atomic_thread_fence(std::memory_order_release);
 
 			copy_find_data(data, e);
 
 			log("returning file '%s' attribs %x\n", data->cFileName, data->dwFileAttributes);
+			//Sleep(1000);
 			return (HANDLE)o;
-			//return open_handle(o);
 		}
 	}
-	log("FindFirstFileA '%s': not found\n", filename);
+	log("FindFirstFile '%s': not found\n", filename);
 	SetLastError(ERROR_FILE_NOT_FOUND);
-	fatal_error("nay");
 	return INVALID_HANDLE_VALUE;
 }
 
 BOOL WINAPI FindNextFileA(HANDLE h, WIN32_FIND_DATAA* data) {
-// 	auto o = get_object<find_file>(h);
-// 	if (!o) {
-// 		SetLastError(ERROR_INVALID_HANDLE);
-// 		return FALSE;
-// 	}
 	auto* o = (find_file*)h;
+	if (o->magic != o->magic_value) fatal_error("FindNextFile: invalid handle");
 	while (true) {
 		auto e = o->dir_io.get();
 		if (!o->dir_io.next()) break;
-		if (matches_file_pattern(e.file_name, o->pattern)) {
+		bool m = matches_file_pattern(e.file_name, o->pattern);
+		log("match '%s' pattern '%s' ? %d\n", e.file_name, o->pattern, m);
+		if (m) {
 			copy_find_data(data, e);
 			log("returning file '%s' attribs %x\n", data->cFileName, data->dwFileAttributes);
+			//Sleep(1000);
 			return TRUE;
 		}
 	}
@@ -1589,6 +1715,27 @@ BOOL WINAPI FindClose(HANDLE h) {
 	return TRUE;
 }
 
+struct mutex : object {
+	static const auto static_type = object::t_mutex;
+	std::atomic<thread*> owner { nullptr };
+	sleep_queue queue;
+};
+
+bool wait_pred(event* o) {
+	auto val = o->state.load(std::memory_order_relaxed);
+	if (!val) return false;
+	if (o->manual_reset) return true;
+	if (o->state.compare_exchange_weak(val, false, std::memory_order_relaxed)) return true;
+	return false;
+}
+
+bool wait_pred(mutex* o) {
+	thread* owner = o->owner.load(std::memory_order_relaxed);
+	if (owner) return false;
+	if (o->owner.compare_exchange_weak(owner, tlb.current_thread, std::memory_order_relaxed)) return true;
+	return false;
+}
+
 enum WAIT_RETVAL : DWORD {
 	WAIT_OBJECT_0 = 0,
 	WAIT_ABANDONED = 0x80,
@@ -1596,42 +1743,39 @@ enum WAIT_RETVAL : DWORD {
 	WAIT_FAILED = 0xffffffff
 };
 
-bool event_pred(event* e) {
-	auto val = e->state.load(std::memory_order_relaxed);
-	if (!val) return false;
-	if (e->manual_reset) return true;
-	if (e->state.compare_exchange_weak(val, false, std::memory_order_relaxed)) return true;
-	return false;
-}
-
 WAIT_RETVAL WINAPI WaitForSingleObject(HANDLE h, DWORD milliseconds) {
 	log("WaitForSingleObject %p %d\n", (void*)h, milliseconds);
-	auto o = get_object<object>(h);
-	if (!o) {
+	auto go = get_object<object>(h);
+	if (!go) {
 		SetLastError(ERROR_INVALID_HANDLE);
 		return WAIT_FAILED;
 	}
-	if (o->object_type == object::t_event) {
-		event* e = (event*)o.get();
-		auto pred = std::bind(event_pred, e);
+	auto wait = [&](auto* o) {
 		auto* t = tlb.current_thread;
-		if (pred()) { 
+		auto pred = std::bind((bool(*)(decltype(o)))wait_pred, o);
+		if (pred()) {
 			log("thread %#x did not have to wait for event %p\n", t->id, (void*)h);
 			return WAIT_OBJECT_0;
 		}
 		log("thread %#x is waiting for event %p\n", t->id, (void*)h);
 		if (milliseconds == (DWORD)-1) {
-			e->queue.wait(pred);
-		} else {
-			if (!e->queue.wait_for(std::chrono::milliseconds(milliseconds), pred)) {
+			o->queue.wait(pred);
+		} else if (milliseconds != 0) {
+			if (!o->queue.wait_for(std::chrono::milliseconds(milliseconds), pred)) {
 				log("thread %#x timed out from waiting for event %p\n", t->id, (void*)h);
 				return WAIT_TIMEOUT;
 			}
 		}
 		log("thread %#x woke up from waiting for event %p\n", t->id, (void*)h);
 		return WAIT_OBJECT_0;
+	};
+	if (go->object_type == object::t_event) {
+		return wait((event*)go.get());
+	} else if (go->object_type == object::t_mutex) {
+		return wait((mutex*)go.get());
 	} else {
-		log("WaitForSingleObject: object_type %d not supported\n", (int)o->object_type);
+		fatal_error("WaitForSingleObject: wait for unknown object type %d (%s)\n", (int)go->object_type, typeid(*go).name());
+		log("WaitForSingleObject: object_type %d not supported\n", (int)go->object_type);
 		SetLastError(ERROR_NOT_SUPPORTED);
 		return WAIT_FAILED;
 	}
@@ -1665,6 +1809,7 @@ DWORD WINAPI WaitForMultipleObjects(DWORD count, const HANDLE* input_handles, BO
 			objects[i] = { &*o, false };
 			handles[i] = std::move(o);
 		} else {
+			fatal_error("WaitForMultipleObjects: wait for unknown object type %d (%s)\n", (int)o->object_type, typeid(*o).name());
 			log("WaitForMultipleObjects: object_type %d not supported\n", (int)o->object_type);
 			SetLastError(ERROR_NOT_SUPPORTED);
 			return WAIT_FAILED;
@@ -1681,7 +1826,7 @@ DWORD WINAPI WaitForMultipleObjects(DWORD count, const HANDLE* input_handles, BO
 			if (v.second) continue;
 			auto* o = v.first;
 			if (o->object_type == object::t_event) {
-				if (event_pred((event*)&*o)) {
+				if (wait_pred((event*)&*o)) {
 					v.second = true;
 					if (n_signalled == 0) first_signalled = i;
 					++n_signalled;
@@ -1727,6 +1872,7 @@ BOOL WINAPI CloseHandle(HANDLE h) {
 		SetLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
+	if (o->object_type == object::t_mutex) fatal_error("stop");
 	handle_container* c;
 	size_t index;
 	std::tie(c, index) = container_and_index_for_HANDLE(h);
@@ -1742,7 +1888,7 @@ BOOL WINAPI CloseHandle(HANDLE h) {
 	return TRUE;
 }
 
-uintptr_t encode_pointer_value = 0x12345678;
+uintptr_t encode_pointer_value = 0x12345678 ^ std::random_device()();
 
 void* WINAPI EncodePointer(void* ptr) {
 	return (void*)((uintptr_t)ptr ^ encode_pointer_value);
@@ -1751,14 +1897,169 @@ void* WINAPI DecodePointer(void* ptr) {
 	return (void*)((uintptr_t)ptr ^ encode_pointer_value);
 }
 
+BOOL WINAPI IsDebuggerPresent() {
+	return FALSE;
+}
+
+void WINAPI InitializeSListHead(SLIST_HEADER* head) {
+	head->value = 0;
+}
+
+SLIST_ENTRY* WINAPI InterlockedFlushSList(SLIST_HEADER* head) {
+	auto val = *head;
+	SLIST_HEADER null_val { 0xffff000000000000 };
+	while (!native_api::compare_exchange(head, val, null_val));
+	return (SLIST_ENTRY*&)val;
+}
+
+HANDLE WINAPI CreateMutexA(void* security_attributes, BOOL initial_owner, const char* name) {
+	auto o = new_object<mutex>();
+	if (!o) {
+		SetLastError(ERROR_NO_SYSTEM_RESOURCES);
+		return nullptr;
+	}
+	if (initial_owner) o->owner.store(tlb.current_thread, std::memory_order_relaxed);
+	log("CreateMutex '%s' %d -> %p\n", name, (int)initial_owner, (void*)o.h);
+	std::atomic_thread_fence(std::memory_order_release);
+	return open_handle(o);
+}
+
+BOOL WINAPI ReleaseMutex(HANDLE h) {
+	auto o = get_object<mutex>(h);
+	if (!o) {
+		SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	auto* t = tlb.current_thread;
+	if (o->owner != t) {
+		SetLastError(ERROR_NOT_OWNER);
+		return FALSE;
+	}
+	o->owner.store(nullptr, std::memory_order_relaxed);
+	return TRUE;
+}
+
+struct file_mapping: object {
+	static const auto static_type = object::t_file_mapping;
+	uint64_t size = 0;
+	PAGE_PROTECT protect = PAGE_NOACCESS;
+// 	bool is_native_shm = false;
+// 	native_api::shm_io shm_io;
+};
+
+HANDLE WINAPI CreateFileMappingA(HANDLE hfile, void* security_attributes, DWORD protect, DWORD max_size_high, DWORD max_size_low, const char* name) {
+	if (hfile != INVALID_HANDLE_VALUE) {
+		fatal_error("CreateFileMapping: h != INVALID_HANDLE_VALUE, fixme?");
+	}
+	uint64_t size = (uint64_t)max_size_low | ((uint64_t)max_size_high << 32);
+	if (size == 0) {
+		SetLastError(ERROR_FILE_INVALID);
+		return nullptr;
+	}
+	auto o = new_object<file_mapping>();
+	if (!o) {
+		SetLastError(ERROR_NO_SYSTEM_RESOURCES);
+		return nullptr;
+	}
+	o->protect = (PAGE_PROTECT)(protect & 0xff);
+	o->size = size;
+// 	if (true) {
+// 		o->is_native_shm = true;
+// 		std::string strname = name;
+// 		size_t slash_pos = strname.find('\\');
+// 		if (slash_pos != std::string::npos) strname = strname.substr(slash_pos + 1);
+// 		if (!o->shm_io.open(strname.c_str(), size)) {
+// 			log("native shm open '%s' failed\n", strname);
+// 			SetLastError(ERROR_OPEN_FAILED);
+// 			return nullptr;
+// 		}
+// 		log("native shm open '%s' success\n", strname);
+// 	}
+	std::atomic_thread_fence(std::memory_order_release);
+	SetLastError(ERROR_SUCCESS);
+	return open_handle(o);
+}
+
+enum {
+	FILE_MAP_COPY = 1,
+	FILE_MAP_WRITE = 2,
+	FILE_MAP_READ = 4
+};
+
+void* WINAPI MapViewOfFile(HANDLE h, DWORD access, DWORD offset_high, DWORD offset_low, SIZE_T size_arg) {
+	auto o = get_object<file_mapping>(h);
+	if (!o) {
+		SetLastError(ERROR_INVALID_HANDLE);
+		return nullptr;
+	}
+	uint64_t offset = (uint64_t)offset_low | ((uint64_t)offset_high << 32);
+	if (offset & (vm_allocation_granularity - 1)) {
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return nullptr;
+	}
+	size_t size = size_arg;
+	if (offset + size > o->size || offset == o->size) {
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return nullptr;
+	}
+	if (size == 0) {
+		uint64_t size64 = o->size - offset;
+		if ((uint64_t)(size_t)size64 != size64) {
+			SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+			return nullptr;
+		}
+	}
+// 	if (o->is_native_shm) {
+// 		int flags = 0;
+// 		if (access & FILE_MAP_COPY) flags |= native_api::shm_io_copy_on_write;
+// 		if (access & FILE_MAP_WRITE) flags |= native_api::shm_io_write;
+// 		if (access & FILE_MAP_READ) flags |= native_api::shm_io_read;
+// 		void* r = o->shm_io.map(nullptr, offset, size, flags);
+// 		if (!r) {
+// 			log("MapViewOfFile native map failed\n");
+// 			SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+// 			return nullptr;
+// 		}
+// 		return r;
+// 	}
+	void* r = virtual_allocate(nullptr, size, MEM_COMMIT, PAGE_READWRITE, nullptr);
+	log("MapViewOfFile %p %#x %#x %#x -> %p\n", (void*)h, access, offset, size, r);
+	if (!r) {
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return nullptr;
+	}
+	return r;
+}
+
+BOOL WINAPI UnmapViewOfFile(void* addr) {
+	std::lock_guard<std::mutex> l(virtual_mut);
+	auto* r = find_virtual_region(addr);
+	if (!r) {
+		SetLastError(ERROR_INVALID_ADDRESS);
+		return FALSE;
+	}
+	if (r->base != addr) {
+		SetLastError(ERROR_INVALID_ADDRESS);
+		return FALSE;
+	}
+	virtual_deallocate_nolock(r);
+	return TRUE;
+}
+
 register_funcs funcs({
 	{ "kernel32:SetLastError", SetLastError },
 	{ "kernel32:GetLastError", GetLastError },
 	{ "kernel32:GetVersionExA", GetVersionExA },
 	{ "kernel32:GetVersion", GetVersion },
 	{ "kernel32:GetModuleHandleA", GetModuleHandleA },
+	{ "kernel32:GetModuleHandleW", wtoa_function(GetModuleHandleA) },
+	{ "kernel32:GetModuleHandleExA", GetModuleHandleExA },
+	{ "kernel32:GetModuleHandleExW", wtoa_function(GetModuleHandleExA) },
 	{ "kernel32:GetProcAddress", GetProcAddress },
 	{ "kernel32:LoadLibraryA", LoadLibraryA },
+	{ "kernel32:LoadLibraryW", wtoa_function(LoadLibraryA) },
+	{ "kernel32:LoadLibraryExA", LoadLibraryExA },
+	{ "kernel32:LoadLibraryExW", wtoa_function(LoadLibraryExA) },
 	{ "kernel32:FreeLibrary", FreeLibrary },
 	{ "kernel32:HeapCreate", HeapCreate },
 	{ "kernel32:HeapAlloc", HeapAlloc },
@@ -1776,15 +2077,19 @@ register_funcs funcs({
 	{ "kernel32:GetModuleFileNameA", GetModuleFileNameA },
 	{ "kernel32:GetCurrentThreadId", GetCurrentThreadId },
 	{ "kernel32:GetStartupInfoA", GetStartupInfoA },
+	{ "kernel32:GetStartupInfoW", GetStartupInfoW },
 	{ "kernel32:GetStdHandle", GetStdHandle },
 	{ "kernel32:GetFileType", GetFileType },
 	{ "kernel32:SetHandleCount", SetHandleCount },
 	{ "kernel32:VirtualQuery", VirtualQuery },
 	{ "kernel32:VirtualAlloc", VirtualAlloc },
 	{ "kernel32:VirtualFree", VirtualFree },
+	{ "kernel32:VirtualLock", VirtualLock },
+	{ "kernel32:VirtualUnlock", VirtualUnlock },
 	{ "kernel32:UnhandledExceptionFilter", UnhandledExceptionFilter },
 	{ "kernel32:SetUnhandledExceptionFilter", SetUnhandledExceptionFilter },
 	{ "kernel32:GetCommandLineA", GetCommandLineA },
+	{ "kernel32:GetCommandLineW", GetCommandLineW },
 	{ "kernel32:GetEnvironmentStringsW", GetEnvironmentStringsW },
 	{ "kernel32:FreeEnvironmentStringsW", FreeEnvironmentStringsW },
 	{ "kernel32:WideCharToMultiByte", WideCharToMultiByte },
@@ -1796,18 +2101,24 @@ register_funcs funcs({
 	{ "kernel32:GetTickCount", GetTickCount },
 	{ "kernel32:QueryPerformanceCounter", QueryPerformanceCounter },
 	{ "kernel32:CreateEventA", CreateEventA },
+	{ "kernel32:CreateEventW", wtoa_function(CreateEventA) },
 	{ "kernel32:GetSystemInfo", GetSystemInfo },
 	{ "kernel32:GetDiskFreeSpaceA", GetDiskFreeSpaceA },
+	{ "kernel32:GetDiskFreeSpaceW", wtoa_function(GetDiskFreeSpaceA) },
 	{ "kernel32:GlobalMemoryStatus", GlobalMemoryStatus },
 	{ "kernel32:GetCurrentProcess", GetCurrentProcess },
 	{ "kernel32:SetConsoleCtrlHandler", SetConsoleCtrlHandler },
 	{ "kernel32:CreateThread", CreateThread },
 	{ "kernel32:SetThreadPriority", SetThreadPriority },
 	{ "kernel32:GetFileAttributesA", GetFileAttributesA },
+	{ "kernel32:GetFileAttributesW", wtoa_function(GetFileAttributesA) },
 	{ "kernel32:GetFullPathNameA", GetFullPathNameA },
 	{ "kernel32:GetDriveTypeA", GetDriveTypeA },
+	{ "kernel32:GetDriveTypeW", wtoa_function(GetDriveTypeA) },
 	{ "kernel32:GetVolumeInformationA", GetVolumeInformationA },
+	{ "kernel32:GetVolumeInformationW", wtoa_function(GetVolumeInformationA) },
 	{ "kernel32:CreateFileA", CreateFileA },
+	{ "kernel32:CreateFileW", wtoa_function(CreateFileA) },
 	{ "kernel32:SetFilePointer", SetFilePointer },
 	{ "kernel32:ReadFile", ReadFile },
 	{ "kernel32:InterlockedIncrement", InterlockedIncrement },
@@ -1822,6 +2133,16 @@ register_funcs funcs({
 	{ "kernel32:CloseHandle", CloseHandle },
 	{ "kernel32:EncodePointer", EncodePointer },
 	{ "kernel32:DecodePointer", DecodePointer },
+	{ "kernel32:IsDebuggerPresent", IsDebuggerPresent },
+	{ "kernel32:InitializeSListHead", InitializeSListHead },
+	{ "kernel32:InterlockedFlushSList", InterlockedFlushSList },
+	{ "kernel32:CreateMutexA", CreateMutexA },
+	{ "kernel32:CreateMutexW", wtoa_function(CreateMutexA) },
+	{ "kernel32:ReleaseMutex", ReleaseMutex },
+	{ "kernel32:CreateFileMappingA", CreateFileMappingA },
+	{ "kernel32:CreateFileMappingW", wtoa_function(CreateFileMappingA) },
+	{ "kernel32:MapViewOfFile", MapViewOfFile },
+	{ "kernel32:UnmapViewOfFile", UnmapViewOfFile },
 });
 
 

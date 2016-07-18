@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <functional>
 #include <chrono>
+#include <locale>
+#include <codecvt>
 
 #include "strf.h"
 
@@ -41,6 +43,11 @@ static void fatal_error(const char* fmt, T&&... args) {
 	std::quick_exit(-1);
 }
 
+// template<typename R, typename... args_T>
+// wrap_wide_strings(R(STDCALL*ptr)(args_T...)) {
+// 	raw_ptr_value = (void*)ptr;
+// }
+
 struct func_ptr {
 	void* raw_ptr_value;
 	template<typename R, typename... args_T>
@@ -53,18 +60,23 @@ struct func_ptr {
 	}
 };
 
+#define wtoa_function(func) environment::get_wide_function<decltype(&func), &func>(&func)
 
-void add_func(const std::string& name, func_ptr func, bool has_initialized = false);
-void* get_implemented_function(const std::string& name);
-void* get_unimplemented_stub(const std::string& name);
-
-struct register_funcs {
-	register_funcs(const std::unordered_map<std::string, func_ptr>& funcs) {
-		for (auto& v : funcs) {
-			add_func(v.first, v.second);
-		}
-	}
-};
+#ifdef _MSC_VER
+static std::u16string utf8_to_utf16(const std::string& str) {
+	return (std::u16string&)std::wstring_convert<std::codecvt_utf8_utf16<int16_t>, int16_t>{}.from_bytes(str);
+}
+static std::string utf16_to_utf8(const std::u16string& str) {
+	return std::wstring_convert<std::codecvt_utf8_utf16<int16_t>, int16_t>{}.to_bytes((int16_t*)str.data());
+}
+#else
+static std::u16string utf8_to_utf16(const std::string& str) {
+	return std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t>{}.from_bytes(str);
+}
+static std::string utf16_to_utf8(const std::u16string& str) {
+	return std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t>{}.to_bytes(str.data());
+}
+#endif
 
 namespace environment {
 	void init();
@@ -82,7 +94,59 @@ namespace environment {
 			f();
 		}));
 	}
+
+	void add_func(const std::string& name, func_ptr func, bool has_initialized = false);
+	void* get_implemented_function(const std::string& name);
+	void* get_unimplemented_stub(const std::string& name);
+
+	bool has_implemented_functions_in_module(const std::string& name);
+
+	void cpuid(int function, int subfunction, uint32_t info[4]);
+
+	template<typename T>
+	struct ansi_to_wide {
+		using type = T;
+	};
+	template<>
+	struct ansi_to_wide<const char*> {
+		using type = const char16_t*;
+	};
+
+	template<typename T>
+	struct wide_to_ansi {
+		T operator()(T value) {
+			return value;
+		}
+	};
+
+	template<>
+	struct wide_to_ansi<const char16_t*> {
+		std::string str;
+		const char* operator()(const char16_t* input) {
+			if (!input) return nullptr;
+			str = utf16_to_utf8(input);
+			return str.c_str();
+		}
+	};
+
+	template<typename func_T, func_T func, typename R, typename... args_T>
+	R WINAPI wide_function(args_T... args) {
+		return func(wide_to_ansi<args_T>()(args)...);
+	}
+
+	template<typename func_T, func_T func, typename R, typename... args_T>
+	auto get_wide_function(R(WINAPI*ptr)(args_T...)) {
+		return &wide_function<func_T, func, R, typename ansi_to_wide<args_T>::type...>;
+	}
 }
+
+struct register_funcs {
+	register_funcs(const std::vector<std::pair<std::string, func_ptr>>& funcs) {
+		for (auto& v : funcs) {
+			environment::add_func(v.first, v.second);
+		}
+	}
+};
 
 template<typename T1, typename T2>
 static bool str_icase_eq(const T1& str1, const T2& str2) {

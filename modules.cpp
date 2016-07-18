@@ -202,7 +202,7 @@ module_info* load_module(const char* path, bool overwrite) {
 		if (import->FirstThunk == 0) break;
 		std::string libname = (const char*)addr + import->Name;
 
-		module_info* mi = load_library(libname.c_str(), true);
+		module_info* mi = load_library(libname.c_str(), true, true);
 
 		const char* dot = nullptr;
 		for (char& c : libname) {
@@ -220,7 +220,7 @@ module_info* load_module(const char* path, bool overwrite) {
 			}
 			void* proc;
 			std::string fullname = format("%s:%s", libname, funcname);
-			proc = get_implemented_function(fullname);
+			proc = environment::get_implemented_function(fullname);
 			if (!proc) {
 				if (*dw & 0x80000000) {
 					size_t ordinal = (*dw & 0xffff) - mi->ordinal_base;
@@ -233,7 +233,7 @@ module_info* load_module(const char* path, bool overwrite) {
 					log("import '%s'?\n", name);
 				}
 			}
-			if (!proc) proc = get_unimplemented_stub(fullname);
+			if (!proc) proc = environment::get_unimplemented_stub(fullname);
 			*((void**)((uint8_t*)addr + import->FirstThunk) + i) = proc;
 			++dw;
 		}
@@ -291,7 +291,7 @@ module_info* load_module(const char* path, bool overwrite) {
 std::recursive_mutex load_mut;
 std::list<std::pair<module_info*, bool>> dll_entries_to_call;
 bool is_loading = false;
-module_info* load_library(const char* path, bool is_load_time) {
+module_info* load_library(const char* path, bool is_load_time, bool fake_if_necessary) {
 	std::lock_guard<std::recursive_mutex> l(load_mut);
 	auto filename = get_filename(path);
 	auto* i = get_module_info(filename.c_str());
@@ -299,7 +299,27 @@ module_info* load_library(const char* path, bool is_load_time) {
 	bool was_loading = is_loading;
 	if (!was_loading) is_loading = true;
 	i = load_module(path, false);
-	if (!i) i = load_fake_module(path);
+	if (!i) {
+		if (fake_if_necessary) {
+			i = load_fake_module(path);
+		} else {
+			auto full_path = get_full_path(path);
+			auto name = get_filename(full_path);
+			auto lcase_name_no_ext = name;
+			size_t dot_pos = lcase_name_no_ext.rfind('.');
+			if (dot_pos != std::string::npos) lcase_name_no_ext.resize(dot_pos);
+			for (char& c : lcase_name_no_ext) {
+				if (c >= 'A' && c <= 'Z') c |= 0x20;
+			}
+			if (environment::has_implemented_functions_in_module(lcase_name_no_ext)) {
+				i = load_fake_module(path);
+			}
+			if (!i) {
+				log("failed to load library '%s'\n", path);
+				return nullptr;
+			}
+		}
+	}
 	if (i->entry) {
 		if (!is_load_time) {
 			log("calling entry point for %p\n", i->base);

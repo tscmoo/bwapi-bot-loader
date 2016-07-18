@@ -33,10 +33,9 @@ int main() {
 		log("This image must be linked with base address 0x300000 and relocations stripped.\n");
 		return -1;
 	}
-
 	std::string module_filename = "StarCraft.exe";
 
-	kernel32::cmdline = module_filename;
+	kernel32::set_cmdline(module_filename);
 
 	auto* i = modules::load_main(module_filename.c_str(), true);
 	if (!i) fatal_error("failed to load %s", module_filename);
