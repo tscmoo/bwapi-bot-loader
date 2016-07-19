@@ -1,6 +1,7 @@
 #ifndef WINTYPES_H
 #define WINTYPES_H
 
+#include "environment.h"
 #include <stdint.h>
 
 namespace wintypes {
@@ -13,8 +14,13 @@ namespace wintypes {
 	using SHORT = int16_t;
 	using LONG = int32_t;
 
+	using UCHAR = uint8_t;
+	using USHORT = uint16_t;
 	using UINT = uint32_t;
 	using ULONG = uint32_t;
+
+	using UINT_PTR = uint32_t;
+	using LONG_PTR = int32_t;
 	using ULONG_PTR = uint32_t;
 	using DWORD_PTR = uint32_t;
 
@@ -25,15 +31,71 @@ namespace wintypes {
 		TRUE = 1
 	};
 
-	using HMODULE = void*;
-	using HANDLE = void*;
-	using HINSTANCE = void*;
-	using HWND = void*;
+	using pointer32_t = uint32_t;
 
-	struct FILETIME {
-		DWORD dwLowDateTime;
-		DWORD dwHighDateTime;
+	template<typename T>
+	struct pointer32_T {
+		uint32_t value = 0;
+		pointer32_T() = default;
+		pointer32_T(std::nullptr_t) : value(0) {};
+		pointer32_T(T* value) : value((uint32_t)(uintptr_t)value) {}
+		pointer32_T(const pointer32_T&) = default;
+		template<typename T2>
+		explicit pointer32_T(T2 value) : pointer32_T((T*)(uintptr_t)value) {}
+		template<typename T2>
+		pointer32_T& operator=(T2* v) {
+			value = (uint32_t)(uintptr_t)(T*)(uintptr_t)v;
+			return *this;
+		}
+		operator T*() {
+			return (T*)value;
+		}
+		explicit operator bool() const {
+			return value != 0;
+		}
+		template<typename T2>
+		explicit operator T2() const {
+			return (T2)value;
+		}
+		template<typename T2>
+		bool operator==(const T2& n) const {
+			return (uintptr_t)value == (uintptr_t)(T*)n;
+		}
+		template<typename T2>
+		bool operator!=(const T2& n) const {
+			return (uintptr_t)value == (uintptr_t)(T*)n;
+		}
+		template<typename T1 = T, typename std::enable_if<!std::is_same<T1, void>::value>::type* = nullptr, typename T2 = std::conditional<std::is_same<T1, void>, int, T1>::type>
+		T2& operator*() const {
+			return *(T2*)value;
+		}
+		template<typename T1 = T, typename std::enable_if<!std::is_same<T1, void>::value>::type* = nullptr>
+		T* operator->() const {
+			return (T*)value;
+		}
 	};
+
+	static const pointer32_t nullptr32 = 0;
+
+	static pointer32_t to_pointer32(void* ptr) {
+		pointer32_t r = (pointer32_t)(uintptr_t)ptr;
+		if ((uintptr_t)r != (uintptr_t)ptr) fatal_error("to_pointer32: the pointer %p does not fit in 32 bits", ptr);
+		return r;
+	}
+
+	using HMODULE = pointer32_t;
+	using HANDLE = pointer32_t;
+	using HINSTANCE = pointer32_t;
+	using HWND = pointer32_t;
+	using HDC = pointer32_t;
+
+	using ATOM = WORD;
+
+	using LRESULT = LONG_PTR;
+	using WPARAM = UINT_PTR;
+	using LPARAM = LONG_PTR;
+
+	using HRESULT = LONG;
 
 	static const HANDLE INVALID_HANDLE_VALUE = (HANDLE)-1;
 
@@ -57,6 +119,8 @@ namespace wintypes {
 		ERROR_NOT_OWNER = 288,
 		ERROR_INVALID_ADDRESS = 487,
 		ERROR_FILE_INVALID = 1006,
+		ERROR_CANNOT_FIND_WND_CLASS = 1407,
+		ERROR_CLASS_ALREADY_EXISTS = 1410,
 		ERROR_NO_SYSTEM_RESOURCES = 1450
 	};
 
@@ -94,6 +158,11 @@ namespace wintypes {
 	};
 
 	static const DWORD INVALID_SET_FILE_POINTER = (DWORD)-1;
+
+	struct FILETIME {
+		DWORD dwLowDateTime;
+		DWORD dwHighDateTime;
+	};
 
 	struct IMAGE_DOS_HEADER {
 		WORD e_magic;
@@ -196,7 +265,7 @@ namespace wintypes {
 	};
 
 	struct CRITICAL_SECTION {
-		void* DebugInfo;
+		pointer32_T<void> DebugInfo;
 		LONG LockCount;
 		LONG RecursionCount;
 		HANDLE OwningThread;
@@ -207,9 +276,9 @@ namespace wintypes {
 	template<typename char_T>
 	struct STARTUPINFOT {
 		DWORD cb;
-		const char_T* lpReserved;
-		const char_T* lpDesktop;
-		const char_T* lpTitle;
+		pointer32_T<const char_T*> lpReserved;
+		pointer32_T<const char_T*> lpDesktop;
+		pointer32_T<const char_T*> lpTitle;
 		DWORD dwX;
 		DWORD dwY;
 		DWORD dwXSize;
@@ -229,8 +298,8 @@ namespace wintypes {
 	using STARTUPINFOW = STARTUPINFOT<char16_t>;
 
 	struct MEMORY_BASIC_INFORMATION {
-		void* BaseAddress;
-		void* AllocationBase;
+		pointer32_T<void*> BaseAddress;
+		pointer32_T<void*> AllocationBase;
 		DWORD AllocationProtect;
 		SIZE_T RegionSize;
 		DWORD State;
@@ -242,7 +311,7 @@ namespace wintypes {
 		DWORD ExceptionCode;
 		DWORD ExceptionFlags;
 		EXCEPTION_RECORD* ExceptionRecord;
-		void* ExceptionAddress;
+		pointer32_T<void*> ExceptionAddress;
 		DWORD NumberParameters;
 		ULONG_PTR ExceptionInformation[15];
 	};
@@ -297,8 +366,8 @@ namespace wintypes {
 		WORD wProcessorArchitecture;
 		WORD wReserved;
 		DWORD dwPageSize;
-		void* lpMinimumApplicationAddress;
-		void* lpMaximumApplicationAddress;
+		pointer32_T<void*> lpMinimumApplicationAddress;
+		pointer32_T<void*> lpMaximumApplicationAddress;
 		DWORD_PTR dwActiveProcessorMask;
 		DWORD dwNumberOfProcessors;
 		DWORD dwProcessorType;
@@ -347,7 +416,14 @@ namespace wintypes {
 		uint64_t value;
 	};
 	struct alignas(8) SLIST_ENTRY {
-		SLIST_ENTRY* next;
+		pointer32_T<SLIST_ENTRY> next;
+	};
+
+	struct GUID {
+		ULONG Data1;
+		USHORT Data2;
+		USHORT Data3;
+		UCHAR Data4[8];
 	};
 
 };

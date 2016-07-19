@@ -42,6 +42,15 @@
     <ClCompile Include="ws2_32.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="gdi32.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sdl2.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ddraw.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="wintypes.h">
@@ -63,6 +72,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="intrusive_list.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="native_window.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="user32.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

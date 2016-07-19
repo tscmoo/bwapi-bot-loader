@@ -1,10 +1,12 @@
-
+#include "user32.h"
 #include "environment.h"
 #include "modules.h"
 #include "wintypes.h"
 using namespace wintypes;
 #include "kernel32.h"
+#include "native_window.h"
 #include <cstdarg>
+#include <mutex>
 
 namespace user32 {
 ;
@@ -31,7 +33,7 @@ void* WINAPI LoadIconA(HINSTANCE h, const char* icon_name) {
 HANDLE WINAPI LoadImageA(HINSTANCE h, const char* name, UINT type, int width, int height, UINT load) {
 	log("LoadImage %p %p %d %d %d %d; not supported\n", (void*)h, name, type, width, height, load);
 	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
-	return nullptr;
+	return nullptr32;
 }
 
 void* WINAPI LoadCursorA(HINSTANCE h, const char* cursor_name) {
@@ -41,7 +43,7 @@ void* WINAPI LoadCursorA(HINSTANCE h, const char* cursor_name) {
 }
 
 HWND WINAPI GetForegroundWindow() {
-	return nullptr;
+	return nullptr32;
 }
 
 
@@ -402,19 +404,219 @@ BOOL WINAPI GetClassInfoA(HINSTANCE h, const char* class_name, void* wnd_class) 
 	return FALSE;
 }
 
-register_funcs funcs({
-	{ "user32:LoadStringA", LoadStringA },
-	{ "user32:LoadAcceleratorsA", LoadAcceleratorsA },
-	{ "user32:LoadIconA", LoadIconA },
-	{ "user32:LoadImageA", LoadImageA },
-	{ "user32:LoadCursorA", LoadCursorA },
-	{ "user32:GetForegroundWindow", GetForegroundWindow },
-	{ "user32:wsprintfA", (int(*)(char*,const char*))wsprintfA },
-	{ "user32:SetRect", SetRect },
-	{ "user32:ClientToScreen", ClientToScreen },
-	{ "user32:PeekMessageA", PeekMessageA },
-	{ "user32:RegisterClassA", RegisterClassA },
-	{ "user32:GetClassInfoA", GetClassInfoA },
+using WNDPROC = LRESULT(STDCALL*)(HWND, UINT, WPARAM, LPARAM);
+
+struct WNDCLASSEXA {
+	UINT cbSize;
+	UINT style;
+	WNDPROC lpfnWndProc;
+	int cbClsExtra;
+	int cbWndExtra;
+	HINSTANCE hInstance;
+	void* hIcon;
+	void* hCursor;
+	void* hbrBackground;
+	const char* lpszMenuName;
+	const char* lpszClassName;
+	void* hIconSm;
+};
+
+struct window_class {
+	bool taken = false;
+	WNDPROC wnd_proc = nullptr;
+	std::string name;
+};
+
+std::vector<window_class> window_classes(0xffff);
+std::mutex windows_mut;
+
+ATOM WINAPI RegisterClassExA(const WNDCLASSEXA* cx) {
+	std::lock_guard<std::mutex> l(windows_mut);
+	for (size_t i = 0; i < window_classes.size(); ++i) {
+		auto& v = window_classes[i];
+		if (v.taken &&  str_icase_eq(cx->lpszClassName, v.name)) {
+			kernel32::SetLastError(ERROR_CLASS_ALREADY_EXISTS);
+			return 0;
+		}
+	}
+	for (size_t i = 0; i < window_classes.size(); ++i) {
+		auto& v = window_classes[i];
+		if (!v.taken) {
+			v.taken = true;
+			v.name = cx->lpszClassName;
+			v.wnd_proc = cx->lpfnWndProc;
+			return (ATOM)(i + 1);
+		}
+	}
+	kernel32::SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+	return 0;
+}
+
+static const auto SM_CXSCREEN = 0;
+static const auto SM_CYSCREEN = 1;
+
+int WINAPI GetSystemMetrics(int index) {
+	if (index == SM_CXSCREEN) {
+		return 640;
+	}
+	if (index == SM_CYSCREEN) {
+		return 480;
+	}
+	fatal_error("GetSystemMetrics %d\n", index);
+	return 0;
+}
+
+struct window {
+	window_class* c = nullptr;
+	native_window::window w;
+};
+
+std::vector<std::unique_ptr<window>> all_windows(0x1000);
+
+window* get_window(HWND h) {
+	return (*(std::unique_ptr<window>*)h).get();
+}
+
+struct CREATESTRUCTA {
+	pointer32_T<void> lpCreateParams;
+	HINSTANCE hInstance;
+	pointer32_T<void> hMenu;
+	HWND hwndParent;
+	int cy;
+	int cx;
+	int y;
+	int x;
+	LONG style;
+	pointer32_T<const char> lpszName;
+	pointer32_T<const char> lpszClass;
+	DWORD dwExStyle;
+};
+
+HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* window_name, DWORD style, int x, int y, int width, int height, HWND parent, HWND menu, HINSTANCE hinstance, void* param) {
+	kernel32::SetLastError(ERROR_SUCCESS);
+	std::lock_guard<std::mutex> l(windows_mut);
+	bool is_atom = (uintptr_t)class_name < 0x10000;
+	size_t atom = (uintptr_t)class_name & 0xffff;
+	if (is_atom) class_name = "(atom)";
+	else {
+		atom = 0;
+		for (size_t i = 0; i < window_classes.size(); ++i) {
+			auto& v = window_classes[i];
+			if (v.taken && str_icase_eq(class_name, v.name)) {
+				atom = i + 1;
+				break;
+			}
+		}
+	}
+	log("CreateWindowEx %#x '%s' '%s' %#x %d %d %d %d %p %p %p %p\n", ex_style, class_name, window_name, style, x, y, width, height, (void*)parent, (void*)menu, (void*)hinstance, param);
+	window_class* c = nullptr;
+	if (atom - 1 < window_classes.size()) c = &window_classes[atom - 1];
+	if (!c || !c->taken) {
+		kernel32::SetLastError(ERROR_CANNOT_FIND_WND_CLASS);
+		return nullptr32;
+	}
+
+	for (size_t i = 0; i < all_windows.size(); ++i) {
+		auto& v = all_windows[i];
+		if (!v) {
+			v = std::make_unique<window>();
+			v->c = c;
+			if (!v->w.create(window_name, style, ex_style, x, y, width, height)) {
+				v.reset();
+				return nullptr32;
+			}
+			CREATESTRUCTA cs;
+			cs.lpCreateParams = param;
+			cs.hInstance = hinstance;
+			cs.hMenu = (void*)menu;
+			cs.hwndParent = parent;
+			cs.cy = height;
+			cs.cx = width;
+			cs.y = y;
+			cs.x = x;
+			cs.style = style;
+			cs.lpszName = window_name;
+			cs.lpszClass = class_name;
+			cs.dwExStyle = ex_style;
+			if (c->wnd_proc((HWND)&v, WM_CREATE, 0, (LPARAM)&cs) == -1) {
+				v.reset();
+				return nullptr32;
+			}
+			log("created window %p\n", &v);
+			return (HWND)&v;
+		}
+	}
+
+	kernel32::SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+	return nullptr32;
+}
+
+LRESULT WINAPI DefWindowProcA(HWND h, UINT msg, WPARAM wparam, LPARAM lparam) {
+	return 0;
+}
+
+BOOL WINAPI UpdateWindow(HWND h) {
+	log("UpdateWindow %p\n", (void*)h);
+	window* w = get_window(h);
+	if (!h) {
+		kernel32::SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	w->c->wnd_proc(h, WM_PAINT, 0, 0);
+	log("WM_PAINT returned\n");
+	return TRUE;
+}
+
+struct PAINTSTRUCT {
+	HDC hdc;
+	BOOL fErase;
+	RECT rcPaint;
+	BOOL fRestore;
+	BOOL fIncUpdate;
+	BYTE rgbReserved[32];
+};
+
+HDC WINAPI BeginPaint(HWND wnd, PAINTSTRUCT* paint) {
+	return nullptr32;
+}
+BOOL WINAPI EndPaint(HWND wnd, const PAINTSTRUCT* paint) {
+	return TRUE;
+}
+HWND WINAPI SetFocus(HWND wnd) {
+	kernel32::SetLastError(ERROR_SUCCESS);
+	return nullptr32;
+}
+pointer32_t WINAPI SetCursor(pointer32_t cursor) {
+	return nullptr32;
+}
+
+BOOL WINAPI ShowWindow(HWND wnd, int cmd) {
+	return TRUE;
+}
+
+register_funcs funcs("user32", {
+	{ "LoadStringA", LoadStringA },
+	{ "LoadAcceleratorsA", LoadAcceleratorsA },
+	{ "LoadIconA", LoadIconA },
+	{ "LoadImageA", LoadImageA },
+	{ "LoadCursorA", LoadCursorA },
+	{ "GetForegroundWindow", GetForegroundWindow },
+	{ "wsprintfA", (int(*)(char*,const char*))wsprintfA },
+	{ "SetRect", SetRect },
+	{ "ClientToScreen", ClientToScreen },
+	{ "PeekMessageA", PeekMessageA },
+	{ "RegisterClassA", RegisterClassA },
+	{ "GetClassInfoA", GetClassInfoA },
+	{ "RegisterClassExA", RegisterClassExA },
+	{ "GetSystemMetrics", GetSystemMetrics },
+	{ "CreateWindowExA", CreateWindowExA },
+	{ "DefWindowProcA", DefWindowProcA },
+	{ "UpdateWindow", UpdateWindow },
+	{ "BeginPaint", BeginPaint },
+	{ "EndPaint", EndPaint },
+	{ "SetFocus", SetFocus },
+	{ "SetCursor", SetCursor },
+	{ "ShowWindow", ShowWindow },
 });
 
 }

@@ -21,10 +21,10 @@ BOOL WINAPI CryptAcquireContextA(void**, const char*, const char*, DWORD, DWORD)
 	return FALSE;
 }
 
-register_funcs funcs({
-	{ "advapi32:RegOpenKeyExA", RegOpenKeyExA },
-	{ "advapi32:AllocateAndInitializeSid", AllocateAndInitializeSid },
-	{ "advapi32:CryptAcquireContextA", CryptAcquireContextA },
+register_funcs funcs("advapi32", {
+	{ "RegOpenKeyExA", RegOpenKeyExA },
+	{ "AllocateAndInitializeSid", AllocateAndInitializeSid },
+	{ "CryptAcquireContextA", CryptAcquireContextA },
 });
 
 }

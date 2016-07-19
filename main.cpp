@@ -20,6 +20,7 @@ char image_buffer[5 * 1024 * 1024];
 
 int main() {
 
+
 	environment::init();
 
 	void* base = (void*)0x400000;

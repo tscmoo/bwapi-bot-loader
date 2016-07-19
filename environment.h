@@ -11,7 +11,6 @@
 
 #include "strf.h"
 
-
 #ifdef _MSC_VER
 #define STDCALL __stdcall
 #else
@@ -30,6 +29,7 @@ static std::string format(const char* fmt, T&&...args) {
 namespace kernel32 {
 	uint32_t WINAPI GetCurrentThreadId();
 };
+
 template<typename...T>
 static void log(const char* fmt, T&&...args) {
 	auto s = format(fmt, std::forward<T>(args)...);
@@ -101,6 +101,8 @@ namespace environment {
 
 	bool has_implemented_functions_in_module(const std::string& name);
 
+	void add_oninit(std::function<void()>, bool has_initialized = false);
+
 	void cpuid(int function, int subfunction, uint32_t info[4]);
 
 	template<typename T>
@@ -141,10 +143,17 @@ namespace environment {
 }
 
 struct register_funcs {
-	register_funcs(const std::vector<std::pair<std::string, func_ptr>>& funcs) {
+	register_funcs(const std::string& libname, const std::vector<std::pair<std::string, func_ptr>>& funcs) {
 		for (auto& v : funcs) {
-			environment::add_func(v.first, v.second);
+			environment::add_func(libname + ":" + v.first, v.second);
 		}
+	}
+};
+
+struct oninit_func {
+	template<typename T>
+	oninit_func(T&& func) {
+		environment::add_oninit(std::forward<T>(func));
 	}
 };
 

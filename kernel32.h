@@ -30,6 +30,7 @@ namespace kernel32 {
 	DWORD WINAPI GetLastError();
 	DWORD WINAPI GetCurrentThreadId();
 	void WINAPI Sleep(DWORD milliseconds);
+	DWORD WINAPI GetTickCount();
 }
 
 #endif

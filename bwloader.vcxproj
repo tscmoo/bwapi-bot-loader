@@ -54,6 +54,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -61,6 +62,7 @@
       <BaseAddress>0x100000</BaseAddress>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <FixedBaseAddress>true</FixedBaseAddress>
+      <AdditionalDependencies>SDL2.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -72,6 +74,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -81,15 +84,19 @@
       <BaseAddress>0x300000</BaseAddress>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <FixedBaseAddress>true</FixedBaseAddress>
+      <AdditionalDependencies>SDL2.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="advapi32.cpp" />
+    <ClCompile Include="ddraw.cpp" />
     <ClCompile Include="environment.cpp" />
+    <ClCompile Include="gdi32.cpp" />
     <ClCompile Include="kernel32.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="modules.cpp" />
     <ClCompile Include="native_api.cpp" />
+    <ClCompile Include="sdl2.cpp" />
     <ClCompile Include="user32.cpp" />
     <ClCompile Include="version.cpp" />
     <ClCompile Include="ws2_32.cpp" />
@@ -101,6 +108,8 @@
     <ClInclude Include="modules.h" />
     <ClInclude Include="native_api.h" />
     <ClInclude Include="strf.h" />
+    <ClInclude Include="native_window.h" />
+    <ClInclude Include="user32.h" />
     <ClInclude Include="wintypes.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

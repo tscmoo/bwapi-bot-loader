@@ -95,14 +95,14 @@ HMODULE WINAPI GetModuleHandleA(const char* name) {
 		log("module '%s' not found\n", name);
 		fatal_error("'%s' not found", name);
 		SetLastError(ERROR_MOD_NOT_FOUND);
-		return nullptr;
+		return nullptr32;
 	}
 	log("module '%s' is at %p\n", name, i->base);
-	return i->base;
+	return to_pointer32(i->base);
 }
 
 BOOL WINAPI GetModuleHandleExA(DWORD flags, const char* name, HMODULE* out_module) {
-	*out_module = nullptr;
+	*out_module = nullptr32;
 	if (flags & 4) {
 		fatal_error("fixme: GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS");
 	}
@@ -113,15 +113,15 @@ BOOL WINAPI GetModuleHandleExA(DWORD flags, const char* name, HMODULE* out_modul
 		SetLastError(ERROR_MOD_NOT_FOUND);
 		return FALSE;
 	}
-	*out_module = i->base;
+	*out_module = to_pointer32(i->base);
 	return TRUE;
 }
 
 void* WINAPI GetProcAddress(HMODULE hm, const char* name) {
-	auto* i = hm ? modules::get_module_info(hm) : main_module_info;
+	auto* i = hm ? modules::get_module_info((void*)hm) : main_module_info;
 	if (!i) {
 		SetLastError(ERROR_MOD_NOT_FOUND);
-		log("GetProcAddress: module %p not found\n", hm);
+		log("GetProcAddress: module %p not found\n", (void*)hm);
 		return nullptr;
 	}
 	bool is_ordinal = (uintptr_t)name < 0x10000;
@@ -131,21 +131,21 @@ void* WINAPI GetProcAddress(HMODULE hm, const char* name) {
 		size_t index = (size_t)ordinal - i->ordinal_base;
 		if (index < i->exports.size()) {
 			void* addr = i->exports[index];
-			log("GetProcAddress: %p ordinal %d found at %p\n", hm, ordinal, addr);
+			log("GetProcAddress: %p ordinal %d found at %p\n", (void*)hm, ordinal, addr);
 			SetLastError(ERROR_SUCCESS);
 			return addr;
 		} else {
-			log("GetProcAddress: %p ordinal %d not found\n", hm, ordinal);
+			log("GetProcAddress: %p ordinal %d not found\n", (void*)hm, ordinal);
 		}
 	} else {
 		auto it = i->export_names.find(name);
 		if (it != i->export_names.end() && it->second < i->exports.size()) {
 			void* addr = i->exports[it->second];
-			log("GetProcAddress: %p::%s found at %p\n", hm, name, addr);
+			log("GetProcAddress: %p::%s found at %p\n", (void*)hm, name, addr);
 			SetLastError(ERROR_SUCCESS);
 			return addr;
 		} else {
-			log("GetProcAddress: %p::%s not found\n", hm, name);
+			log("GetProcAddress: %p::%s not found\n", (void*)hm, name);
 		}
 	}
 	std::string override_name;
@@ -153,7 +153,7 @@ void* WINAPI GetProcAddress(HMODULE hm, const char* name) {
 	else override_name = format("%s:%s", i->lcase_name_no_ext, name);
 	void* r = environment::get_implemented_function(override_name);
 	//if (!r) r = environment::get_unimplemented_stub(override_name);
-	log("GetProcAddress: %p::%s (%s) -> %p\n", hm, name, override_name, r);
+	log("GetProcAddress: %p::%s (%s) -> %p\n", (void*)hm, name, override_name, r);
 	if (!r) {
 		SetLastError(ERROR_PROC_NOT_FOUND);
 	}
@@ -164,10 +164,10 @@ HMODULE WINAPI LoadLibraryA(const char* name) {
 	auto* i = modules::load_library(name, false, false);
 	if (!i) {
 		SetLastError(ERROR_FILE_NOT_FOUND);
-		return nullptr;
+		return nullptr32;
 	}
 	log("LoadLibrary %s -> %p\n", name, i->base);
-	return i->base;
+	return to_pointer32(i->base);
 }
 
 HMODULE WINAPI LoadLibraryExA(const char* name, HANDLE h_reserved, DWORD flags) {
@@ -175,10 +175,10 @@ HMODULE WINAPI LoadLibraryExA(const char* name, HANDLE h_reserved, DWORD flags) 
 	auto* i = modules::load_library(name, false, false);
 	if (!i) {
 		SetLastError(ERROR_FILE_NOT_FOUND);
-		return nullptr;
+		return nullptr32;
 	}
 	log("LoadLibraryEx %s -> %p\n", name, i->base);
-	return i->base;
+	return to_pointer32(i->base);
 }
 
 
@@ -195,7 +195,7 @@ HMODULE WINAPI LoadLibraryExA(const char* name, HANDLE h_reserved, DWORD flags) 
 // }
 
 BOOL WINAPI FreeLibrary(HMODULE h) {
-	auto* i = modules::get_module_info(h);
+	auto* i = modules::get_module_info((void*)h);
 	if (!i) {
 		log("FreeLibrary: module %p not found\n", (void*)h);
 		SetLastError(ERROR_MOD_NOT_FOUND);
@@ -269,7 +269,7 @@ void deref_HANDLE(HANDLE h);
 
 template<typename T>
 struct handle {
-	HANDLE h = nullptr;
+	HANDLE h = nullptr32;
 	T* ptr = nullptr;
 	handle() = default;
 	constexpr handle(std::nullptr_t) : ptr(nullptr) {}
@@ -279,7 +279,7 @@ struct handle {
 		h = n.h;
 		ptr = n.ptr;
 		n.ptr = nullptr;
-		n.h = nullptr;
+		n.h = nullptr32;
 	}
 	~handle() {
 		if (h) {
@@ -322,7 +322,7 @@ std::atomic<handle_container*> next_handle_container { &root_handle_container };
 std::atomic<size_t> total_allocated_handles;
 
 HANDLE handle_n_to_HANDLE(size_t n) {
-	return (void*)((uintptr_t)(1 + n) << 2);
+	return to_pointer32((void*)((uintptr_t)(1 + n) << 2));
 }
 
 size_t HANDLE_to_handle_n(HANDLE h) {
@@ -343,7 +343,7 @@ std::pair<handle_container*, size_t> container_and_index_for_HANDLE(HANDLE h) {
 
 template<typename T>
 HANDLE new_HANDLE(T* obj) {
-	if (total_allocated_handles.load(std::memory_order_relaxed) >= 16 * 1024 * 1024) return nullptr;
+	if (total_allocated_handles.load(std::memory_order_relaxed) >= 16 * 1024 * 1024) return nullptr32;
 	HANDLE r;
 	auto find = [&](handle_container* from, handle_container* to) {
 		for (auto* i = from; i != to; i = i->next.load(std::memory_order_consume)) {
@@ -375,7 +375,7 @@ HANDLE new_HANDLE(T* obj) {
 	last_container->next.store(new_container, std::memory_order_relaxed);
 	if (find(new_container, nullptr)) return r;
 	fatal_error("unreachable: failed to allocate handle from newly created container");
-	return nullptr;
+	return nullptr32;
 }
 
 void delete_object(object* o);
@@ -406,7 +406,7 @@ HANDLE open_handle(T&& o) {
 	std::tie(c, index) = container_and_index_for_HANDLE(o.h);
 	c->handle_is_closed[index].clear(std::memory_order_relaxed);
 	HANDLE r = o.h;
-	o.h = nullptr;
+	o.h = nullptr32;
 	o.ptr = nullptr;
 	return r;
 }
@@ -490,7 +490,7 @@ HANDLE WINAPI HeapCreate(DWORD flags, size_t initial_size, size_t max_size) {
 	std::lock_guard<std::mutex> l(heap_mut);
 	all_heaps.push_back({ flags,initial_size,max_size });
 	//log("HeapCreate %x %d %d\n", flags, initial_size, max_size);
-	return &all_heaps.back();
+	return to_pointer32(&all_heaps.back()); // fixme pointer
 }
 
 void* WINAPI HeapAlloc(HANDLE hHeap, DWORD flags, size_t size) {
@@ -517,8 +517,8 @@ void WINAPI InitializeCriticalSection(CRITICAL_SECTION* cs) {
 	cs->DebugInfo = nullptr;
 	cs->LockCount = -1;
 	cs->RecursionCount = 0;
-	cs->OwningThread = nullptr;
-	cs->LockSemaphore = new std::recursive_mutex();
+	cs->OwningThread = nullptr32;
+	cs->LockSemaphore = to_pointer32(new std::recursive_mutex()); // fixme pointer
 	cs->SpinCount = 0;
 }
 
@@ -526,8 +526,8 @@ void WINAPI InitializeCriticalSection(CRITICAL_SECTION* cs) {
 	cs->DebugInfo = nullptr;
 	cs->LockCount = -1;
 	cs->RecursionCount = 0;
-	cs->OwningThread = nullptr;
-	cs->LockSemaphore = new std::recursive_mutex();;
+	cs->OwningThread = nullptr32;
+	cs->LockSemaphore = to_pointer32(new std::recursive_mutex()); // fixme pointer
 	cs->SpinCount = SpinCount;
 }
 
@@ -535,9 +535,9 @@ void WINAPI DeleteCriticalSection(CRITICAL_SECTION* cs) {
 	cs->DebugInfo = nullptr;
 	cs->LockCount = 0;
 	cs->RecursionCount = 0;
-	cs->OwningThread = nullptr;
-	delete (std::recursive_mutex*)cs->LockSemaphore;
-	cs->LockSemaphore = nullptr;
+	cs->OwningThread = nullptr32;
+	delete (std::recursive_mutex*)cs->LockSemaphore; // fixme pointer
+	cs->LockSemaphore = nullptr32;
 	cs->SpinCount = 0;
 }
 
@@ -640,7 +640,7 @@ void* WINAPI FlsGetValue(DWORD index) {
 }
 
 DWORD WINAPI GetModuleFileNameA(HMODULE hm, char* dst, DWORD size) {
-	auto* i = hm ? modules::get_module_info(hm) : main_module_info;
+	auto* i = hm ? modules::get_module_info((void*)hm) : main_module_info;
 	if (!i) {
 		log("GetModuleFileName %p module not found\n", (void*)hm);
 		SetLastError(ERROR_MOD_NOT_FOUND);
@@ -1275,7 +1275,7 @@ HANDLE WINAPI CreateEventA(void* security_attributes, BOOL manual_reset, BOOL in
 	auto e = new_object<event>();
 	if (!e) {
 		SetLastError(ERROR_NO_SYSTEM_RESOURCES);
-		return nullptr;
+		return nullptr32;
 	}
 	e->manual_reset = manual_reset != FALSE;
 	e->state = initial_state;
@@ -1296,7 +1296,7 @@ handle<thread> new_thread() {
 	return t;
 }
 
-HANDLE default_process_heap = nullptr;
+HANDLE default_process_heap = nullptr32;
 
 void initialize_things() {
 	std_input_handle = open_handle(new_console_handle(true, false));
@@ -1325,13 +1325,13 @@ HANDLE WINAPI CreateThread(void* security_attributes, SIZE_T stack_size, void* s
 	if (creation_flags & 4) {
 		SetLastError(ERROR_NOT_SUPPORTED);
 		log("CreateThread: CREATE_SUSPENDED is not supported");
-		return nullptr;
+		return nullptr32;
 	}
 	auto t = new_thread();
 	auto t2 = duplicate_handle(t);
 	if (!t || !t2) {
 		SetLastError(ERROR_NO_SYSTEM_RESOURCES);
-		return nullptr;
+		return nullptr32;
 	}
 	log("created a new thread with id %d\n", t->id);
 	t->thread_obj = std::thread([t = std::move(t2), start_address, parameter]() mutable {
@@ -1403,7 +1403,7 @@ DWORD WINAPI GetFileAttributesA(const char* filename) {
 	return (DWORD)-1;
 }
 
-DWORD WINAPI GetFullPathNameA(const char* path, DWORD buflen, char* buf, char** filepart) {
+DWORD WINAPI GetFullPathNameA(const char* path, DWORD buflen, char* buf, pointer32_T<char>* filepart) {
 	auto s = get_full_path(path);
 	if (s.size() + 1 > buflen) {
 		SetLastError(ERROR_INSUFFICIENT_BUFFER);
@@ -1419,9 +1419,17 @@ DWORD WINAPI GetFullPathNameA(const char* path, DWORD buflen, char* buf, char** 
 	return s.size();
 }
 
+static const auto DRIVE_UNKNOWN = 0;
+static const auto DRIVE_NO_ROOT_DIR = 1;
+static const auto DRIVE_FIXED = 3;
+
 UINT WINAPI GetDriveTypeA(const char* path_name) {
 	log("GetDriveType '%s'\n", path_name);
-	return 0;
+	if (!path_name) return DRIVE_FIXED;
+	size_t len = strlen(path_name);
+	if (len == 0 || path_name[len - 1] != '\\') return DRIVE_NO_ROOT_DIR;
+	if (len == 3 && (path_name[0] == 'Z' || path_name[0] == 'z') && path_name[1] == ':') return DRIVE_FIXED;
+	return DRIVE_UNKNOWN;
 }
 
 BOOL WINAPI GetVolumeInformationA(const char* root_path, char* volume_name, DWORD volume_name_size, DWORD* serial_number, DWORD* max_component_length, DWORD* filesystem_flags, char* filesystem_name, DWORD filesystem_name_size) {
@@ -1916,7 +1924,7 @@ HANDLE WINAPI CreateMutexA(void* security_attributes, BOOL initial_owner, const 
 	auto o = new_object<mutex>();
 	if (!o) {
 		SetLastError(ERROR_NO_SYSTEM_RESOURCES);
-		return nullptr;
+		return nullptr32;
 	}
 	if (initial_owner) o->owner.store(tlb.current_thread, std::memory_order_relaxed);
 	log("CreateMutex '%s' %d -> %p\n", name, (int)initial_owner, (void*)o.h);
@@ -1954,12 +1962,12 @@ HANDLE WINAPI CreateFileMappingA(HANDLE hfile, void* security_attributes, DWORD 
 	uint64_t size = (uint64_t)max_size_low | ((uint64_t)max_size_high << 32);
 	if (size == 0) {
 		SetLastError(ERROR_FILE_INVALID);
-		return nullptr;
+		return nullptr32;
 	}
 	auto o = new_object<file_mapping>();
 	if (!o) {
 		SetLastError(ERROR_NO_SYSTEM_RESOURCES);
-		return nullptr;
+		return nullptr32;
 	}
 	o->protect = (PAGE_PROTECT)(protect & 0xff);
 	o->size = size;
@@ -2046,103 +2054,108 @@ BOOL WINAPI UnmapViewOfFile(void* addr) {
 	return TRUE;
 }
 
-register_funcs funcs({
-	{ "kernel32:SetLastError", SetLastError },
-	{ "kernel32:GetLastError", GetLastError },
-	{ "kernel32:GetVersionExA", GetVersionExA },
-	{ "kernel32:GetVersion", GetVersion },
-	{ "kernel32:GetModuleHandleA", GetModuleHandleA },
-	{ "kernel32:GetModuleHandleW", wtoa_function(GetModuleHandleA) },
-	{ "kernel32:GetModuleHandleExA", GetModuleHandleExA },
-	{ "kernel32:GetModuleHandleExW", wtoa_function(GetModuleHandleExA) },
-	{ "kernel32:GetProcAddress", GetProcAddress },
-	{ "kernel32:LoadLibraryA", LoadLibraryA },
-	{ "kernel32:LoadLibraryW", wtoa_function(LoadLibraryA) },
-	{ "kernel32:LoadLibraryExA", LoadLibraryExA },
-	{ "kernel32:LoadLibraryExW", wtoa_function(LoadLibraryExA) },
-	{ "kernel32:FreeLibrary", FreeLibrary },
-	{ "kernel32:HeapCreate", HeapCreate },
-	{ "kernel32:HeapAlloc", HeapAlloc },
-	{ "kernel32:HeapFree", HeapFree },
-	{ "kernel32:HeapSize", HeapSize },
-	{ "kernel32:InitializeCriticalSection", InitializeCriticalSection },
-	{ "kernel32:InitializeCriticalSectionAndSpinCount", InitializeCriticalSectionAndSpinCount },
-	{ "kernel32:DeleteCriticalSection", DeleteCriticalSection },
-	{ "kernel32:EnterCriticalSection", EnterCriticalSection },
-	{ "kernel32:LeaveCriticalSection", LeaveCriticalSection },
-	{ "kernel32:FlsAlloc", FlsAlloc},
-	{ "kernel32:FlsFree", FlsFree },
-	{ "kernel32:FlsSetValue", FlsSetValue },
-	{ "kernel32:FlsGetValue", FlsGetValue },
-	{ "kernel32:GetModuleFileNameA", GetModuleFileNameA },
-	{ "kernel32:GetCurrentThreadId", GetCurrentThreadId },
-	{ "kernel32:GetStartupInfoA", GetStartupInfoA },
-	{ "kernel32:GetStartupInfoW", GetStartupInfoW },
-	{ "kernel32:GetStdHandle", GetStdHandle },
-	{ "kernel32:GetFileType", GetFileType },
-	{ "kernel32:SetHandleCount", SetHandleCount },
-	{ "kernel32:VirtualQuery", VirtualQuery },
-	{ "kernel32:VirtualAlloc", VirtualAlloc },
-	{ "kernel32:VirtualFree", VirtualFree },
-	{ "kernel32:VirtualLock", VirtualLock },
-	{ "kernel32:VirtualUnlock", VirtualUnlock },
-	{ "kernel32:UnhandledExceptionFilter", UnhandledExceptionFilter },
-	{ "kernel32:SetUnhandledExceptionFilter", SetUnhandledExceptionFilter },
-	{ "kernel32:GetCommandLineA", GetCommandLineA },
-	{ "kernel32:GetCommandLineW", GetCommandLineW },
-	{ "kernel32:GetEnvironmentStringsW", GetEnvironmentStringsW },
-	{ "kernel32:FreeEnvironmentStringsW", FreeEnvironmentStringsW },
-	{ "kernel32:WideCharToMultiByte", WideCharToMultiByte },
-	{ "kernel32:GetACP", GetACP },
-	{ "kernel32:GetCPInfo", GetCPInfo },
-	{ "kernel32:IsProcessorFeaturePresent", IsProcessorFeaturePresent },
-	{ "kernel32:GetSystemTimeAsFileTime", GetSystemTimeAsFileTime },
-	{ "kernel32:GetCurrentProcessId", GetCurrentProcessId },
-	{ "kernel32:GetTickCount", GetTickCount },
-	{ "kernel32:QueryPerformanceCounter", QueryPerformanceCounter },
-	{ "kernel32:CreateEventA", CreateEventA },
-	{ "kernel32:CreateEventW", wtoa_function(CreateEventA) },
-	{ "kernel32:GetSystemInfo", GetSystemInfo },
-	{ "kernel32:GetDiskFreeSpaceA", GetDiskFreeSpaceA },
-	{ "kernel32:GetDiskFreeSpaceW", wtoa_function(GetDiskFreeSpaceA) },
-	{ "kernel32:GlobalMemoryStatus", GlobalMemoryStatus },
-	{ "kernel32:GetCurrentProcess", GetCurrentProcess },
-	{ "kernel32:SetConsoleCtrlHandler", SetConsoleCtrlHandler },
-	{ "kernel32:CreateThread", CreateThread },
-	{ "kernel32:SetThreadPriority", SetThreadPriority },
-	{ "kernel32:GetFileAttributesA", GetFileAttributesA },
-	{ "kernel32:GetFileAttributesW", wtoa_function(GetFileAttributesA) },
-	{ "kernel32:GetFullPathNameA", GetFullPathNameA },
-	{ "kernel32:GetDriveTypeA", GetDriveTypeA },
-	{ "kernel32:GetDriveTypeW", wtoa_function(GetDriveTypeA) },
-	{ "kernel32:GetVolumeInformationA", GetVolumeInformationA },
-	{ "kernel32:GetVolumeInformationW", wtoa_function(GetVolumeInformationA) },
-	{ "kernel32:CreateFileA", CreateFileA },
-	{ "kernel32:CreateFileW", wtoa_function(CreateFileA) },
-	{ "kernel32:SetFilePointer", SetFilePointer },
-	{ "kernel32:ReadFile", ReadFile },
-	{ "kernel32:InterlockedIncrement", InterlockedIncrement },
-	{ "kernel32:GetProcessHeap", GetProcessHeap },
-	{ "kernel32:FindFirstFileA", FindFirstFileA },
-	{ "kernel32:FindNextFileA", FindNextFileA },
-	{ "kernel32:FindClose", FindClose },
-	{ "kernel32:WaitForSingleObject", WaitForSingleObject },
-	{ "kernel32:WaitForMultipleObjects", WaitForMultipleObjects },
-	{ "kernel32:Sleep", Sleep },
-	{ "kernel32:SetEvent", SetEvent },
-	{ "kernel32:CloseHandle", CloseHandle },
-	{ "kernel32:EncodePointer", EncodePointer },
-	{ "kernel32:DecodePointer", DecodePointer },
-	{ "kernel32:IsDebuggerPresent", IsDebuggerPresent },
-	{ "kernel32:InitializeSListHead", InitializeSListHead },
-	{ "kernel32:InterlockedFlushSList", InterlockedFlushSList },
-	{ "kernel32:CreateMutexA", CreateMutexA },
-	{ "kernel32:CreateMutexW", wtoa_function(CreateMutexA) },
-	{ "kernel32:ReleaseMutex", ReleaseMutex },
-	{ "kernel32:CreateFileMappingA", CreateFileMappingA },
-	{ "kernel32:CreateFileMappingW", wtoa_function(CreateFileMappingA) },
-	{ "kernel32:MapViewOfFile", MapViewOfFile },
-	{ "kernel32:UnmapViewOfFile", UnmapViewOfFile },
+WORD WINAPI GetUserDefaultLangID() {
+	return 0;
+}
+
+register_funcs funcs("kernel32", {
+	{ "SetLastError", SetLastError },
+	{ "GetLastError", GetLastError },
+	{ "GetVersionExA", GetVersionExA },
+	{ "GetVersion", GetVersion },
+	{ "GetModuleHandleA", GetModuleHandleA },
+	{ "GetModuleHandleW", wtoa_function(GetModuleHandleA) },
+	{ "GetModuleHandleExA", GetModuleHandleExA },
+	{ "GetModuleHandleExW", wtoa_function(GetModuleHandleExA) },
+	{ "GetProcAddress", GetProcAddress },
+	{ "LoadLibraryA", LoadLibraryA },
+	{ "LoadLibraryW", wtoa_function(LoadLibraryA) },
+	{ "LoadLibraryExA", LoadLibraryExA },
+	{ "LoadLibraryExW", wtoa_function(LoadLibraryExA) },
+	{ "FreeLibrary", FreeLibrary },
+	{ "HeapCreate", HeapCreate },
+	{ "HeapAlloc", HeapAlloc },
+	{ "HeapFree", HeapFree },
+	{ "HeapSize", HeapSize },
+	{ "InitializeCriticalSection", InitializeCriticalSection },
+	{ "InitializeCriticalSectionAndSpinCount", InitializeCriticalSectionAndSpinCount },
+	{ "DeleteCriticalSection", DeleteCriticalSection },
+	{ "EnterCriticalSection", EnterCriticalSection },
+	{ "LeaveCriticalSection", LeaveCriticalSection },
+	{ "FlsAlloc", FlsAlloc},
+	{ "FlsFree", FlsFree },
+	{ "FlsSetValue", FlsSetValue },
+	{ "FlsGetValue", FlsGetValue },
+	{ "GetModuleFileNameA", GetModuleFileNameA },
+	{ "GetCurrentThreadId", GetCurrentThreadId },
+	{ "GetStartupInfoA", GetStartupInfoA },
+	{ "GetStartupInfoW", GetStartupInfoW },
+	{ "GetStdHandle", GetStdHandle },
+	{ "GetFileType", GetFileType },
+	{ "SetHandleCount", SetHandleCount },
+	{ "VirtualQuery", VirtualQuery },
+	{ "VirtualAlloc", VirtualAlloc },
+	{ "VirtualFree", VirtualFree },
+	{ "VirtualLock", VirtualLock },
+	{ "VirtualUnlock", VirtualUnlock },
+	{ "UnhandledExceptionFilter", UnhandledExceptionFilter },
+	{ "SetUnhandledExceptionFilter", SetUnhandledExceptionFilter },
+	{ "GetCommandLineA", GetCommandLineA },
+	{ "GetCommandLineW", GetCommandLineW },
+	{ "GetEnvironmentStringsW", GetEnvironmentStringsW },
+	{ "FreeEnvironmentStringsW", FreeEnvironmentStringsW },
+	{ "WideCharToMultiByte", WideCharToMultiByte },
+	{ "GetACP", GetACP },
+	{ "GetCPInfo", GetCPInfo },
+	{ "IsProcessorFeaturePresent", IsProcessorFeaturePresent },
+	{ "GetSystemTimeAsFileTime", GetSystemTimeAsFileTime },
+	{ "GetCurrentProcessId", GetCurrentProcessId },
+	{ "GetTickCount", GetTickCount },
+	{ "QueryPerformanceCounter", QueryPerformanceCounter },
+	{ "CreateEventA", CreateEventA },
+	{ "CreateEventW", wtoa_function(CreateEventA) },
+	{ "GetSystemInfo", GetSystemInfo },
+	{ "GetDiskFreeSpaceA", GetDiskFreeSpaceA },
+	{ "GetDiskFreeSpaceW", wtoa_function(GetDiskFreeSpaceA) },
+	{ "GlobalMemoryStatus", GlobalMemoryStatus },
+	{ "GetCurrentProcess", GetCurrentProcess },
+	{ "SetConsoleCtrlHandler", SetConsoleCtrlHandler },
+	{ "CreateThread", CreateThread },
+	{ "SetThreadPriority", SetThreadPriority },
+	{ "GetFileAttributesA", GetFileAttributesA },
+	{ "GetFileAttributesW", wtoa_function(GetFileAttributesA) },
+	{ "GetFullPathNameA", GetFullPathNameA },
+	{ "GetDriveTypeA", GetDriveTypeA },
+	{ "GetDriveTypeW", wtoa_function(GetDriveTypeA) },
+	{ "GetVolumeInformationA", GetVolumeInformationA },
+	{ "GetVolumeInformationW", wtoa_function(GetVolumeInformationA) },
+	{ "CreateFileA", CreateFileA },
+	{ "CreateFileW", wtoa_function(CreateFileA) },
+	{ "SetFilePointer", SetFilePointer },
+	{ "ReadFile", ReadFile },
+	{ "InterlockedIncrement", InterlockedIncrement },
+	{ "GetProcessHeap", GetProcessHeap },
+	{ "FindFirstFileA", FindFirstFileA },
+	{ "FindNextFileA", FindNextFileA },
+	{ "FindClose", FindClose },
+	{ "WaitForSingleObject", WaitForSingleObject },
+	{ "WaitForMultipleObjects", WaitForMultipleObjects },
+	{ "Sleep", Sleep },
+	{ "SetEvent", SetEvent },
+	{ "CloseHandle", CloseHandle },
+	{ "EncodePointer", EncodePointer },
+	{ "DecodePointer", DecodePointer },
+	{ "IsDebuggerPresent", IsDebuggerPresent },
+	{ "InitializeSListHead", InitializeSListHead },
+	{ "InterlockedFlushSList", InterlockedFlushSList },
+	{ "CreateMutexA", CreateMutexA },
+	{ "CreateMutexW", wtoa_function(CreateMutexA) },
+	{ "ReleaseMutex", ReleaseMutex },
+	{ "CreateFileMappingA", CreateFileMappingA },
+	{ "CreateFileMappingW", wtoa_function(CreateFileMappingA) },
+	{ "MapViewOfFile", MapViewOfFile },
+	{ "UnmapViewOfFile", UnmapViewOfFile },
+	{ "GetUserDefaultLangID", GetUserDefaultLangID },
 });
 
 

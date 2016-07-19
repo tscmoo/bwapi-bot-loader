@@ -33,9 +33,9 @@ int WINAPI WSACleanup() {
 	return 0;
 }
 
-register_funcs funcs({
-	{ "ws2_32:ordinal 115", WSAStartup },
-	{ "ws2_32:ordinal 116", WSACleanup },
+register_funcs funcs("ws2_32", {
+	{ "ordinal 115", WSAStartup },
+	{ "ordinal 116", WSACleanup },
 });
 
 }

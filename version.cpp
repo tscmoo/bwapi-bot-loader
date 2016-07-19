@@ -13,8 +13,8 @@ DWORD WINAPI GetFileVersionInfoSizeA(const char* filename, DWORD* out_handle) {
 	return 0;
 }
 
-register_funcs funcs({
-	{ "version:GetFileVersionInfoSizeA", GetFileVersionInfoSizeA },
+register_funcs funcs("version", {
+	{ "GetFileVersionInfoSizeA", GetFileVersionInfoSizeA },
 });
 
 }

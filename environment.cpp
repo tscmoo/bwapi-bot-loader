@@ -8,6 +8,7 @@ using namespace wintypes;
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -108,6 +109,8 @@ void enter_thread(const std::function<void()>& f) {
 
 }
 
+void call_oninit_funcs();
+
 void init() {
 	add_func("", &init, true);
 
@@ -128,6 +131,9 @@ void init() {
 	while ((uintptr_t)p % 4) ++p;
 	(void*&)cpuid_f = p;
 	generate_cpuid(p);
+
+	add_oninit(nullptr, true);
+	call_oninit_funcs();
 }
 
 void unimplemented_stub(const char* name, void* retaddr) {
@@ -200,6 +206,21 @@ void add_func(const std::string& name, func_ptr func, bool has_initialized) {
 		return;
 	}
 	if (!local_implemented_functions.emplace(name, func).second) fatal_error("function %s already implemented", name);
+}
+
+std::vector<std::function<void()>> oninit_funcs;
+
+void call_oninit_funcs() {
+	for (auto& v : oninit_funcs) {
+		v();
+	}
+}
+
+void add_oninit(std::function<void()> func, bool has_initialized) {
+	static std::vector<std::function<void()>> local_oninit_funcs;
+	if (has_initialized) {
+		oninit_funcs = std::move(local_oninit_funcs);
+	} else local_oninit_funcs.push_back(std::move(func));
 }
 
 bool has_implemented_functions_in_module(const std::string& name) {
