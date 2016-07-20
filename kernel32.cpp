@@ -205,6 +205,16 @@ BOOL WINAPI FreeLibrary(HMODULE h) {
 	return TRUE;
 }
 
+BOOL WINAPI DisableThreadLibraryCalls(HMODULE h) {
+	auto* i = modules::get_module_info((void*)h);
+	if (!i) {
+		SetLastError(ERROR_MOD_NOT_FOUND);
+		return FALSE;
+	}
+	i->thread_library_calls_enabled = false;
+	return TRUE;
+}
+
 template<typename T, size_t list_size>
 class id_list {
 	std::array<std::atomic<T>, list_size> list {};
@@ -658,7 +668,7 @@ DWORD WINAPI GetModuleFileNameA(HMODULE hm, char* dst, DWORD size) {
 	} else {
 		memcpy(dst, module_filename.data(), module_filename.size());
 		dst[module_filename.size()] = 0;
-		log("GetModuleFileName %p -> '%s'\n", hm, dst);
+		log("GetModuleFileName %p -> '%s'\n", (void*)hm, dst);
 		SetLastError(ERROR_SUCCESS);
 		return module_filename.size();
 	}
@@ -1415,7 +1425,7 @@ DWORD WINAPI GetFullPathNameA(const char* path, DWORD buflen, char* buf, pointer
 		buf[i] = c;
 		if (filepart && (c == '/' || c == '\\')) *filepart = &buf[i + 1];
 	}
-	log("GetFullPathName '%s' -> '%s' (filepart '%s')\n", path, buf, filepart ? *filepart : nullptr);
+	log("GetFullPathName '%s' -> '%s' (filepart '%s')\n", path, buf, (char*)(filepart ? *filepart : nullptr));
 	return s.size();
 }
 
@@ -2058,6 +2068,15 @@ WORD WINAPI GetUserDefaultLangID() {
 	return 0;
 }
 
+UINT WINAPI SetErrorMode() {
+	return 0;
+}
+
+UINT WINAPI GetProfileIntA(const char* appname, const char* keyname, INT default) {
+	log("GetProfileIntA %s %s %d\n", appname, keyname, default);
+	return default;
+}
+
 register_funcs funcs("kernel32", {
 	{ "SetLastError", SetLastError },
 	{ "GetLastError", GetLastError },
@@ -2073,6 +2092,7 @@ register_funcs funcs("kernel32", {
 	{ "LoadLibraryExA", LoadLibraryExA },
 	{ "LoadLibraryExW", wtoa_function(LoadLibraryExA) },
 	{ "FreeLibrary", FreeLibrary },
+	{ "DisableThreadLibraryCalls", DisableThreadLibraryCalls },
 	{ "HeapCreate", HeapCreate },
 	{ "HeapAlloc", HeapAlloc },
 	{ "HeapFree", HeapFree },
@@ -2156,6 +2176,9 @@ register_funcs funcs("kernel32", {
 	{ "MapViewOfFile", MapViewOfFile },
 	{ "UnmapViewOfFile", UnmapViewOfFile },
 	{ "GetUserDefaultLangID", GetUserDefaultLangID },
+	{ "SetErrorMode", SetErrorMode },
+	{ "GetProfileIntA", GetProfileIntA },
+	{ "GetProfileIntW", wtoa_function(GetProfileIntA) },
 });
 
 

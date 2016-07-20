@@ -24,8 +24,13 @@ HGDIOBJ WINAPI GetStockObject(int n) {
 	return nullptr;
 }
 
+void* WINAPI CreatePalette(void*) {
+	return nullptr;
+}
+
 register_funcs funcs("gdi32", {
 	{ "GetStockObject", GetStockObject },
+	{ "CreatePalette", CreatePalette },
 });
 
 }

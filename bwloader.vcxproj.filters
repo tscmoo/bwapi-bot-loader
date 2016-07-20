@@ -51,6 +51,9 @@
     <ClCompile Include="ddraw.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="storm.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="wintypes.h">
@@ -78,6 +81,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="user32.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="native_window_drawing.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

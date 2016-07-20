@@ -477,6 +477,12 @@ window* get_window(HWND h) {
 	return (*(std::unique_ptr<window>*)h).get();
 }
 
+native_window::window* get_native_window(HWND h) {
+	auto* w = get_window(h);
+	if (!h) return nullptr;
+	return &w->w;
+}
+
 struct CREATESTRUCTA {
 	pointer32_T<void> lpCreateParams;
 	HINSTANCE hInstance;
@@ -491,6 +497,10 @@ struct CREATESTRUCTA {
 	pointer32_T<const char> lpszClass;
 	DWORD dwExStyle;
 };
+
+LPARAM MAKELPARAM(WORD low, WORD high) {
+	return (LPARAM)low | ((LPARAM)high << 16);
+}
 
 HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* window_name, DWORD style, int x, int y, int width, int height, HWND parent, HWND menu, HINSTANCE hinstance, void* param) {
 	kernel32::SetLastError(ERROR_SUCCESS);
@@ -542,6 +552,12 @@ HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* 
 				v.reset();
 				return nullptr32;
 			}
+			c->wnd_proc((HWND)&v, WM_SIZE, 0, MAKELPARAM(width, height));
+			c->wnd_proc((HWND)&v, WM_MOVE, 0, MAKELPARAM(x, y));
+			c->wnd_proc((HWND)&v, WM_SHOWWINDOW, 0, 0);
+			c->wnd_proc((HWND)&v, WM_ACTIVATEAPP, 1, 0);
+			c->wnd_proc((HWND)&v, WM_ACTIVATE, 1, (HWND)&v);
+			c->wnd_proc((HWND)&v, WM_SETFOCUS, 0, 0);
 			log("created window %p\n", &v);
 			return (HWND)&v;
 		}
@@ -579,18 +595,50 @@ struct PAINTSTRUCT {
 HDC WINAPI BeginPaint(HWND wnd, PAINTSTRUCT* paint) {
 	return nullptr32;
 }
+
 BOOL WINAPI EndPaint(HWND wnd, const PAINTSTRUCT* paint) {
 	return TRUE;
 }
+
 HWND WINAPI SetFocus(HWND wnd) {
 	kernel32::SetLastError(ERROR_SUCCESS);
 	return nullptr32;
 }
+
 pointer32_t WINAPI SetCursor(pointer32_t cursor) {
 	return nullptr32;
 }
 
 BOOL WINAPI ShowWindow(HWND wnd, int cmd) {
+	return TRUE;
+}
+
+BOOL WINAPI SetCursorPos(int x, int y) {
+	log("SetCursorPos %d %d\n", x, y);
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
+
+BOOL WINAPI GetCursorPos(POINT* r) {
+	r->x = 0;
+	r->y = 0;
+	return FALSE;
+}
+
+BOOL WINAPI ClipCursor(RECT* rect) {
+	log("ClipCursor %d %d %d %d\n", rect->left, rect->top, rect->right, rect->bottom);
+	return TRUE;
+}
+
+int WINAPI ShowCursor(BOOL show) {
+	return show ? 1 : 0;
+}
+
+BOOL WINAPI IsIconic(HWND wnd) {
+	return FALSE;
+}
+
+BOOL WINAPI IsWindowVisible(HWND wnd) {
 	return TRUE;
 }
 
@@ -617,6 +665,12 @@ register_funcs funcs("user32", {
 	{ "SetFocus", SetFocus },
 	{ "SetCursor", SetCursor },
 	{ "ShowWindow", ShowWindow },
+	{ "SetCursorPos", SetCursorPos },
+	{ "GetCursorPos", GetCursorPos },
+	{ "ShowCursor", ShowCursor },
+	{ "ClipCursor", ClipCursor },
+	{ "IsIconic", IsIconic },
+	{ "IsWindowVisible", IsWindowVisible }
 });
 
 }

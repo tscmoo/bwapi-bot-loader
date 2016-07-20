@@ -12,6 +12,7 @@ namespace wintypes {
 
 	using CHAR = int8_t;
 	using SHORT = int16_t;
+	using INT = int32_t;
 	using LONG = int32_t;
 
 	using UCHAR = uint8_t;

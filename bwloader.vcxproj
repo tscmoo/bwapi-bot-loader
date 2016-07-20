@@ -97,11 +97,13 @@
     <ClCompile Include="modules.cpp" />
     <ClCompile Include="native_api.cpp" />
     <ClCompile Include="sdl2.cpp" />
+    <ClCompile Include="storm.cpp" />
     <ClCompile Include="user32.cpp" />
     <ClCompile Include="version.cpp" />
     <ClCompile Include="ws2_32.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="native_window_drawing.h" />
     <ClInclude Include="environment.h" />
     <ClInclude Include="intrusive_list.h" />
     <ClInclude Include="kernel32.h" />
