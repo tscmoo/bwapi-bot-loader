@@ -419,7 +419,7 @@ void call_thread_attach() {
 		}
 	}
 	for (auto& v : dlls) {
-		if (v->entry) {
+		if (v->entry && v->thread_library_calls_enabled) {
 			log("calling DLL_THREAD_ATTACH for %p\n", v->base);
 			((BOOL(WINAPI*)(void*, DWORD, int))v->entry)(v->base, 2, 0);
 		}
@@ -435,7 +435,7 @@ void call_thread_detach() {
 		}
 	}
 	for (auto& v : dlls) {
-		if (v->entry) {
+		if (v->entry && v->thread_library_calls_enabled) {
 			log("calling DLL_THREAD_DETACH for %p\n", v->base);
 			((BOOL(WINAPI*)(void*, DWORD, int))v->entry)(v->base, 3, 0);
 		}

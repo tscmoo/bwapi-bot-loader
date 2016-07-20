@@ -33,6 +33,8 @@ namespace modules {
 
 		resource_directory* root_resource_directory = nullptr;
 		std::list<resource_directory> all_resource_directories;
+
+		bool thread_library_calls_enabled = false;
 	};
 
 	module_info* get_module_info(const char* name);
