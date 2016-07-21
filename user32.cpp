@@ -7,6 +7,8 @@ using namespace wintypes;
 #include "native_window.h"
 #include <cstdarg>
 #include <mutex>
+#include <map>
+#include <set>
 
 namespace user32 {
 ;
@@ -38,9 +40,22 @@ struct window_class {
 std::vector<window_class> window_classes(0xffff);
 std::mutex windows_mut;
 
+using TIMERPROC = void (STDCALL*)(HWND wnd, UINT msg, UINT_PTR id, DWORD time);
+
 struct window {
 	window_class* c = nullptr;
 	native_window::window w;
+
+	struct timer {
+		UINT_PTR id;
+		TIMERPROC proc;
+		UINT interval;
+	};
+	std::mutex timer_mut;
+	std::thread timer_thread;
+	std::condition_variable timer_cv;
+	std::map<uint64_t, timer> timers;
+	std::set<std::pair<UINT_PTR, TIMERPROC>> triggered_timers;
 };
 
 std::vector<std::unique_ptr<window>> all_windows(0x1000);
@@ -448,7 +463,18 @@ BOOL WINAPI PeekMessageA(MSG* msg, HWND hwnd, UINT msg_filter_min, UINT msg_filt
 	memset(msg, 0, sizeof(*msg));
 	msg->hwnd = hwnd;
 	msg->time = kernel32::GetTickCount();
-	return w->w.peek_message(msg) ? TRUE : FALSE;
+	if (w->w.peek_message(msg)) return TRUE;
+	if (!w->triggered_timers.empty()) {
+		auto i = w->triggered_timers.begin();
+		UINT_PTR id = i->first;
+		TIMERPROC proc = i->second;
+		w->triggered_timers.erase(i);
+		msg->message = WM_TIMER;
+		msg->wParam = id;
+		msg->lParam = (LPARAM)proc;
+		return TRUE;
+	}
+	return FALSE;
 }
 
 LRESULT WINAPI DispatchMessageA(const MSG* msg) {
@@ -593,6 +619,12 @@ HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* 
 }
 
 LRESULT WINAPI DefWindowProcA(HWND h, UINT msg, WPARAM wparam, LPARAM lparam) {
+	if (msg == WM_TIMER) {
+		TIMERPROC proc = (TIMERPROC)lparam;
+		log("DefWindowProc: timer proc %p\n", proc);
+		proc(h, msg, wparam, kernel32::GetTickCount());
+		return 0;
+	}
 	return 0;
 }
 
@@ -691,14 +723,68 @@ BOOL WINAPI ReleaseCapture() {
 
 BOOL WINAPI KillTimer(HWND wnd, UINT_PTR id) {
 	log("KillTimer %p %d\n", (void*)wnd, id);
-	kernel32::SetLastError(ERROR_INVALID_HANDLE);
-	return FALSE;
+	auto* w = get_window(focus_window);
+	if (!w) {
+		kernel32::SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	std::lock_guard<std::mutex> l(w->timer_mut);
+	for (auto i = w->timers.begin(); i != w->timers.end(); ++i) {
+		auto& v = *i;
+		if (v.second.id == id) {
+			w->timers.erase(i);
+			break;
+		}
+	}
+	return TRUE;
 }
 
-UINT_PTR WINAPI SetTimer(HWND wnd, UINT_PTR id, UINT timeout, void* func) {
-	log("SetTimer %p %d %d %p\n", (void*)wnd, id, timeout, func);
-	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
-	return 0;
+UINT_PTR WINAPI SetTimer(HWND wnd, UINT_PTR id, UINT interval, TIMERPROC callback) {
+	log("SetTimer %p %d %d %p\n", (void*)wnd, id, interval, callback);
+	if (!wnd) fatal_error("SetTimer with null HWND");
+	if (id == 0) fatal_error("SetTimer with id 0");
+	auto* w = get_window(focus_window);
+	if (!w) {
+		kernel32::SetLastError(ERROR_INVALID_HANDLE);
+		return 0;
+	}
+	std::lock_guard<std::mutex> l(w->timer_mut);
+	for (auto i = w->timers.begin(); i != w->timers.end(); ++i) {
+		auto& v = *i;
+		if (v.second.id == id) {
+			w->timers.erase(i);
+			break;
+		}
+	}
+	window::timer t;
+	t.id = id;
+	t.interval = interval;
+	t.proc = callback;
+	w->timers.emplace(kernel32::GetTickCount64() + interval, t);
+	w->timer_cv.notify_all();
+	if (!w->timer_thread.joinable()) {
+		w->timer_thread = std::thread([w]() {
+			while (true) {
+				std::unique_lock<std::mutex> l(w->timer_mut);
+				while (w->timers.empty()) w->timer_cv.wait(l);
+				uint64_t now = kernel32::GetTickCount64();
+				auto& next = *w->timers.begin();
+				uint64_t wait = next.first - now;
+				if (wait > 1000 * 60 * 10) wait = 1000 * 60 * 10;
+				w->timer_cv.wait_for(l, std::chrono::milliseconds((int)wait));
+				if (w->timers.empty()) continue;
+				auto& trig = *w->timers.begin();
+				now = kernel32::GetTickCount64();
+				if (now >= trig.first) {
+					auto copy = trig.second;
+					w->timers.erase(w->timers.begin());
+					w->timers.emplace(now + copy.interval, copy);
+					w->triggered_timers.emplace(copy.id, copy.proc);
+				}
+			}
+		});
+	}
+	return id;
 }
 
 BOOL WINAPI PtInRect(const RECT* rect, POINT point) {
