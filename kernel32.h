@@ -31,6 +31,7 @@ namespace kernel32 {
 	DWORD WINAPI GetCurrentThreadId();
 	void WINAPI Sleep(DWORD milliseconds);
 	DWORD WINAPI GetTickCount();
+	ULONGLONG WINAPI GetTickCount64();
 }
 
 #endif

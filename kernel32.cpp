@@ -316,7 +316,7 @@ struct handle {
 	}
 };
 
-constexpr size_t handles_per_container = 2;
+constexpr size_t handles_per_container = 0x100;
 
 struct handle_container {
 	size_t base = 0;
@@ -382,10 +382,10 @@ HANDLE new_HANDLE(T* obj) {
 	}
 	handle_container* new_container = new handle_container();
 	new_container->base = base;
+	if (!find(new_container, nullptr)) fatal_error("unreachable: failed to allocate handle from newly created container");
+	std::atomic_thread_fence(std::memory_order_release);
 	last_container->next.store(new_container, std::memory_order_relaxed);
-	if (find(new_container, nullptr)) return r;
-	fatal_error("unreachable: failed to allocate handle from newly created container");
-	return nullptr32;
+	return r;
 }
 
 void delete_object(object* o);
@@ -435,7 +435,10 @@ handle<T> new_object() {
 	o->refcount.fetch_add(1, std::memory_order_relaxed);
 	std::atomic_thread_fence(std::memory_order_release);
 	HANDLE h = new_HANDLE(&*o);
-	if (!h) return nullptr;
+	if (!h) {
+		fatal_error("new_object failed\n");
+		return nullptr;
+	}
 	log("new object %s handle %p\n", typeid(*o).name(), (void*)h);
 	return handle<T>(h, o.release());
 }
@@ -1183,15 +1186,21 @@ DWORD WINAPI GetCurrentProcessId() {
 	return 1;
 }
 
-std::chrono::high_resolution_clock clock;
-auto start_time = clock.now();
+std::chrono::high_resolution_clock highres_clock;
+auto highres_start = highres_clock.now();
+std::chrono::steady_clock tick_clock;
+auto tick_start = tick_clock.now();
 
 DWORD WINAPI GetTickCount() {
-	return std::chrono::duration_cast<std::chrono::duration<DWORD, std::ratio<1, 1000>>>(clock.now() - start_time).count() + 600000;
+	return std::chrono::duration_cast<std::chrono::duration<DWORD, std::ratio<1, 1000>>>(tick_clock.now() - tick_start).count() + 600000;
+}
+
+ULONGLONG WINAPI GetTickCount64() {
+	return std::chrono::duration_cast<std::chrono::duration<ULONGLONG, std::ratio<1, 1000>>>(tick_clock.now() - tick_start).count() + 600000;
 }
 
 BOOL WINAPI QueryPerformanceCounter(uint64_t* count) {
-	*count = (uint64_t)(clock.now() - start_time).count();
+	*count = (uint64_t)(highres_clock.now() - highres_start).count();
 	return TRUE;
 }
 
@@ -2248,6 +2257,7 @@ register_funcs funcs("kernel32", {
 	{ "GetSystemTimeAsFileTime", GetSystemTimeAsFileTime },
 	{ "GetCurrentProcessId", GetCurrentProcessId },
 	{ "GetTickCount", GetTickCount },
+	{ "GetTickCount64", GetTickCount64 },
 	{ "QueryPerformanceCounter", QueryPerformanceCounter },
 	{ "CreateEventA", CreateEventA },
 	{ "CreateEventW", wtoa_function(CreateEventA) },

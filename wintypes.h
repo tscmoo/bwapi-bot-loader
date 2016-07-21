@@ -27,6 +27,8 @@ namespace wintypes {
 
 	using SIZE_T = uint32_t;
 
+	using ULONGLONG = uint64_t;
+
 	enum BOOL : int32_t {
 		FALSE = 0,
 		TRUE = 1
