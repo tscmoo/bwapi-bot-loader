@@ -23,6 +23,11 @@ namespace user32 {
 		WM_SHOWWINDOW = 0x18,
 		WM_PAINT = 0xf,
 		WM_ACTIVATEAPP = 0x1c,
+		WM_MOUSEMOVE = 0x200,
+		WM_LBUTTONDOWN = 0x201,
+		WM_LBUTTONUP = 0x202,
+		WM_RBUTTONDOWN = 0x204,
+		WM_RBUTTONUP = 0x205,
 	};
 
 	native_window::window* get_native_window(HWND h);

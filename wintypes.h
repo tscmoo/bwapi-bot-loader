@@ -98,6 +98,10 @@ namespace wintypes {
 
 	using HRESULT = LONG;
 
+	static LPARAM MAKELPARAM(WORD low, WORD high) {
+		return (LPARAM)low | ((LPARAM)high << 16);
+	}
+
 	static const HANDLE INVALID_HANDLE_VALUE = (HANDLE)-1;
 
 	static const DWORD GENERIC_READ = 0x80000000;
@@ -117,12 +121,14 @@ namespace wintypes {
 		ERROR_INSUFFICIENT_BUFFER = 122,
 		ERROR_MOD_NOT_FOUND = 126,
 		ERROR_PROC_NOT_FOUND = 127,
+		ERROR_ALREADY_EXISTS = 183,
 		ERROR_NOT_OWNER = 288,
 		ERROR_INVALID_ADDRESS = 487,
 		ERROR_FILE_INVALID = 1006,
 		ERROR_CANNOT_FIND_WND_CLASS = 1407,
 		ERROR_CLASS_ALREADY_EXISTS = 1410,
-		ERROR_NO_SYSTEM_RESOURCES = 1450
+		ERROR_NO_SYSTEM_RESOURCES = 1450,
+		ERROR_RESOURCE_NOT_FOUND = 5007,
 	};
 
 	enum PAGE_PROTECT : DWORD {
@@ -425,6 +431,15 @@ namespace wintypes {
 		USHORT Data2;
 		USHORT Data3;
 		UCHAR Data4[8];
+	};
+		
+	struct MSG {
+		HWND hwnd;
+		UINT message;
+		WPARAM wParam;
+		LPARAM lParam;
+		DWORD time;
+		POINT pt;
 	};
 
 };

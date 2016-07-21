@@ -11,6 +11,10 @@ LONG WINAPI RegOpenKeyExA(void* hkey, const char* subkey, DWORD options, DWORD r
 	return ERROR_FILE_NOT_FOUND;
 }
 
+LONG WINAPI RegCreateKeyExA(void* hkey, const char* subkey, DWORD reserved, const char* classname, DWORD options, void* regsam, void* security_attributes, void** result, DWORD* disposition) {
+	return ERROR_NOT_SUPPORTED;
+}
+
 BOOL WINAPI AllocateAndInitializeSid(void*, BYTE, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, void*) {
 	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
 	return FALSE;
@@ -23,6 +27,7 @@ BOOL WINAPI CryptAcquireContextA(void**, const char*, const char*, DWORD, DWORD)
 
 register_funcs funcs("advapi32", {
 	{ "RegOpenKeyExA", RegOpenKeyExA },
+	{ "RegCreateKeyExA", RegCreateKeyExA },
 	{ "AllocateAndInitializeSid", AllocateAndInitializeSid },
 	{ "CryptAcquireContextA", CryptAcquireContextA },
 });

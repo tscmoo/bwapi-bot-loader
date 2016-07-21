@@ -271,7 +271,7 @@ module_info* load_module(const char* path, bool overwrite) {
 				} else {
 					IMAGE_RESOURCE_DATA_ENTRY* de = (IMAGE_RESOURCE_DATA_ENTRY*)(res_start + e->OffsetToData);
 					auto& v = d->id[id];
-					v.data = res_start + de->OffsetToData;
+					v.data = (uint8_t*)addr + de->OffsetToData;
 					v.size = de->Size;
 				}
 			}

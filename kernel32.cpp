@@ -92,8 +92,8 @@ DWORD WINAPI GetVersion() {
 HMODULE WINAPI GetModuleHandleA(const char* name) {
 	auto* i = name ? modules::get_module_info(name) : main_module_info;
 	if (!i) {
-		log("module '%s' not found\n", name);
-		fatal_error("'%s' not found", name);
+		log("GetModuleHandle: module '%s' not found\n", name);
+		//fatal_error("'%s' not found", name);
 		SetLastError(ERROR_MOD_NOT_FOUND);
 		return nullptr32;
 	}
@@ -108,7 +108,7 @@ BOOL WINAPI GetModuleHandleExA(DWORD flags, const char* name, HMODULE* out_modul
 	}
 	auto* i = name ? modules::get_module_info(name) : main_module_info;
 	if (!i) {
-		log("ex module '%s' not found\n", name);
+		log("GetModuleHandleEx: module '%s' not found\n", name);
 		//fatal_error("'%s' not found retaddr %p", name, _ReturnAddress());
 		SetLastError(ERROR_MOD_NOT_FOUND);
 		return FALSE;
@@ -363,7 +363,7 @@ HANDLE new_HANDLE(T* obj) {
 				if (i->refcounts[n].load(std::memory_order_relaxed)) fatal_error("new_HANDLE: refcount is non-zero");
 				i->refcounts[n].store(1, std::memory_order_relaxed);
 				r = handle_n_to_HANDLE(i->base + n);
-				log("created new handle %p\n", r);
+				log("created new handle %p\n", (void*)r);
 				return true;
 			}
 		}
@@ -572,12 +572,11 @@ struct local_storage {
 	}
 
 	size_t get_next_index() {
-		size_t index = next_index;
+		size_t index = next_index.load(std::memory_order_relaxed);
 		if (index >= ls.size()) {
 			return 0xffffffff;
 		}
 		while (!next_index.compare_exchange_weak(index, index + 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
-			index = next_index;
 			if (index >= ls.size()) {
 				return 0xffffffff;
 			}
@@ -587,15 +586,9 @@ struct local_storage {
 
 	size_t get_free_index() {
 		auto take = [&](size_t index) {
-			bool was_busy = ls[index].busy;
-			if (!was_busy) {
-				while (!ls[index].busy.compare_exchange_weak(was_busy, true)) {
-					was_busy = ls[index].busy;
-					if (was_busy) return false;
-				}
-				return true;
-			}
-			return false;
+			bool was_busy = ls[index].busy.load(std::memory_order_relaxed);
+			if (was_busy) return false;
+			return ls[index].busy.compare_exchange_weak(was_busy, true, std::memory_order_relaxed, std::memory_order_relaxed);
 		};
 		size_t index = get_next_index();
 		while (index < ls.size()) {
@@ -609,7 +602,7 @@ struct local_storage {
 	}
 };
 
-local_storage fls;
+thread_local local_storage fls;
 
 DWORD WINAPI FlsAlloc(void* callback) {
 	size_t index = fls.get_free_index();
@@ -696,6 +689,7 @@ struct file : object {
 	std::function<uint64_t(uint64_t offset, MOVE_METHOD method)> set_pos;
 	std::function<uint64_t()> get_pos;
 	std::function<bool(void* buffer, size_t to_read, size_t* read)> read;
+	std::function<uint64_t()> get_size;
 };
 
 handle<file> new_console_handle(bool input, bool output) {
@@ -1408,8 +1402,16 @@ BOOL WINAPI SetConsoleCtrlHandler(void* handler, BOOL add) {
 }
 
 DWORD WINAPI GetFileAttributesA(const char* filename) {
-	log("GetFileAttributes for %s\n", filename);
-	SetLastError(ERROR_NOT_SUPPORTED);
+	auto s = get_native_path(filename);
+	auto rv = [&]() {
+		if (native_api::is_directory(s.c_str())) return 0x10;
+		else if (native_api::is_file(s.c_str())) return 0x80;
+		else return -1;
+	};
+	auto r = rv();
+	log("GetFileAttributes for %s (%s): %d\n", filename, s, r);
+	if (r != -1) return r;
+	SetLastError(ERROR_FILE_NOT_FOUND);
 	return (DWORD)-1;
 }
 
@@ -1511,6 +1513,7 @@ HANDLE WINAPI CreateFileA(const char* filename, DWORD access, DWORD share_mode, 
 		return INVALID_HANDLE_VALUE;
 	}
 	o->access = access;
+	o->file_type = FILE_TYPE_DISK;
 
 	auto f = std::make_shared<native_api::file_io>(std::move(file_io));
 
@@ -1526,6 +1529,9 @@ HANDLE WINAPI CreateFileA(const char* filename, DWORD access, DWORD share_mode, 
 			SetLastError(ERROR_READ_FAULT);
 		}
 		return r;
+	};
+	o->get_size = [f]() {
+		return f->get_size();
 	};
 
 	log("create file ok\n");
@@ -1572,6 +1578,24 @@ BOOL WINAPI ReadFile(HANDLE h, void* buffer, DWORD to_read, DWORD* read, void* o
 	*read = (DWORD)n_read;
 	log("ReadFile %p %p %d %p -> %d (%d read)\n", (void*)h, buffer, to_read, read, success, n_read);
 	return success ? TRUE : FALSE;
+}
+
+DWORD WINAPI GetFileSize(HANDLE h, DWORD* size_high) {
+	auto o = get_object<file>(h);
+	if (!o) {
+		SetLastError(ERROR_INVALID_HANDLE);
+		return (DWORD)-1;
+	}
+	if (!o->get_size) {
+		log("GetFileSize: no size for object\n");
+		SetLastError(ERROR_INVALID_HANDLE);
+		return (DWORD)-1;
+	}
+	uint64_t size = o->get_size();
+	log("GetFileSize: returning %d\n", size);
+	SetLastError(ERROR_SUCCESS);
+	if (size_high) *size_high = (DWORD)(size >> 32);
+	return (DWORD)size;
 }
 
 LONG WINAPI InterlockedIncrement(LONG* value) {
@@ -1684,7 +1708,6 @@ HANDLE WINAPI FindFirstFileA(const char* filename, WIN32_FIND_DATAA* data) {
 	}
 	while (true) {
 		auto e = dir_io.get();
-		if (!dir_io.next()) break;
 		bool m = matches_file_pattern(e.file_name, pattern);
 		log("match '%s' pattern '%s' ? %d\n", e.file_name, pattern, m);
 		if (m) {
@@ -1699,6 +1722,7 @@ HANDLE WINAPI FindFirstFileA(const char* filename, WIN32_FIND_DATAA* data) {
 			//Sleep(1000);
 			return (HANDLE)o;
 		}
+		if (!dir_io.next()) break;
 	}
 	log("FindFirstFile '%s': not found\n", filename);
 	SetLastError(ERROR_FILE_NOT_FOUND);
@@ -2077,6 +2101,99 @@ UINT WINAPI GetProfileIntA(const char* appname, const char* keyname, INT default
 	return default;
 }
 
+BOOL WINAPI CreateDirectoryA(const char* name, void* security_attributes) {
+	log("create directory %s\n", name);
+	SetLastError(ERROR_ALREADY_EXISTS);
+	return FALSE;
+}
+
+void* WINAPI FindResourceA(HMODULE hm, const char* name, const char* type) {
+	auto* i = hm ? modules::get_module_info((void*)hm) : main_module_info;
+	if (!i) {
+		SetLastError(ERROR_MOD_NOT_FOUND);
+		return nullptr32;
+	}
+	bool name_is_id = (uintptr_t)name < 0x10000;
+	DWORD name_id = (uintptr_t)name & 0xffff;
+	if (name_is_id) name = "(id)";
+	bool type_is_id = (uintptr_t)type < 0x10000;
+	DWORD type_id = (uintptr_t)type & 0xffff;
+	if (type_is_id) type = "(id)";
+	if (!i->root_resource_directory) {
+		SetLastError(ERROR_RESOURCE_NOT_FOUND);
+		return nullptr;
+	}
+	std::string str;
+	std::function<void(modules::resource_directory*, int)> dump = [&](modules::resource_directory* dir, int level) {
+		if (!dir) return;
+		for (auto& v : dir->named) {
+			for (int i = 0; i < level; ++i) str += " ";
+			str += format("'%s' -\n", utf16_to_utf8(v.first));
+			if (v.second.dir) dump(v.second.dir, level + 1);
+		}
+		for (auto& v : dir->id) {
+			for (int i = 0; i < level; ++i) str += " ";
+			str += format("%d -\n", v.first);
+			if (v.second.dir) dump(v.second.dir, level + 1);
+		}
+	};
+	dump(i->root_resource_directory, 2);
+	log("FindResource: root -\n%s\n", str);
+	modules::resource_entry* re = nullptr;
+	if (type_is_id) {
+		auto it = i->root_resource_directory->id.find(type_id);
+		if (it != i->root_resource_directory->id.end()) re = &it->second;
+	} else {
+		auto it = i->root_resource_directory->named.find(utf8_to_utf16(type));
+		if (it != i->root_resource_directory->named.end()) re = &it->second;
+	}
+	if (!re || !re->dir) {
+		SetLastError(ERROR_RESOURCE_NOT_FOUND);
+		return nullptr;
+	}
+	modules::resource_entry* re2 = nullptr;
+	if (name_is_id) {
+		auto it = re->dir->id.find(name_id);
+		if (it != re->dir->id.end()) re2 = &it->second;
+	} else {
+		auto it = re->dir->named.find(utf8_to_utf16(name));
+		if (it != re->dir->named.end()) re2 = &it->second;
+	}
+	if (re2 && re2->dir) {
+		auto it = re2->dir->id.find(1033);
+		if (it != re2->dir->id.end()) re2 = &it->second;
+	}
+	if (!re2 || !re2->data) {
+		SetLastError(ERROR_RESOURCE_NOT_FOUND);
+		return nullptr;
+	}
+	log("FindResource %p %s %s -> %p\n", (void*)hm, name, type, re2);
+	SetLastError(ERROR_SUCCESS);
+	return re2;
+}
+
+DWORD WINAPI SizeofResource(HMODULE hm, void* resinfo) {
+	modules::resource_entry* re = (modules::resource_entry*)resinfo;
+	return (DWORD)re->size;
+}
+
+void* WINAPI LoadResource(HMODULE hm, void* resinfo) {
+	modules::resource_entry* re = (modules::resource_entry*)resinfo;
+	return re->data;
+}
+
+void* WINAPI LockResource(void* data) {
+	log("LockResource: %p\n", data);
+	return data;
+}
+
+BOOL WINAPI DeleteFileA(const char* filename) {
+	log("DeleteFile: %s\n", filename);
+	if (native_api::delete_file(filename)) return TRUE;
+	SetLastError(ERROR_FILE_NOT_FOUND);
+	return FALSE;
+}
+
 register_funcs funcs("kernel32", {
 	{ "SetLastError", SetLastError },
 	{ "GetLastError", GetLastError },
@@ -2102,7 +2219,7 @@ register_funcs funcs("kernel32", {
 	{ "DeleteCriticalSection", DeleteCriticalSection },
 	{ "EnterCriticalSection", EnterCriticalSection },
 	{ "LeaveCriticalSection", LeaveCriticalSection },
-	{ "FlsAlloc", FlsAlloc},
+	{ "FlsAlloc", FlsAlloc },
 	{ "FlsFree", FlsFree },
 	{ "FlsSetValue", FlsSetValue },
 	{ "FlsGetValue", FlsGetValue },
@@ -2153,6 +2270,7 @@ register_funcs funcs("kernel32", {
 	{ "CreateFileW", wtoa_function(CreateFileA) },
 	{ "SetFilePointer", SetFilePointer },
 	{ "ReadFile", ReadFile },
+	{ "GetFileSize", GetFileSize },
 	{ "InterlockedIncrement", InterlockedIncrement },
 	{ "GetProcessHeap", GetProcessHeap },
 	{ "FindFirstFileA", FindFirstFileA },
@@ -2179,6 +2297,15 @@ register_funcs funcs("kernel32", {
 	{ "SetErrorMode", SetErrorMode },
 	{ "GetProfileIntA", GetProfileIntA },
 	{ "GetProfileIntW", wtoa_function(GetProfileIntA) },
+	{ "CreateDirectoryA", CreateDirectoryA },
+	{ "CreateDirectoryW", wtoa_function(CreateDirectoryA) },
+	{ "FindResourceA", FindResourceA },
+	{ "FindResourceW", wtoa_function(FindResourceA) },
+	{ "SizeofResource", SizeofResource },
+	{ "LoadResource", LoadResource },
+	{ "LockResource", LockResource },
+	{ "DeleteFileA", DeleteFileA },
+	{ "DeleteFileW", wtoa_function(DeleteFileA) },
 });
 
 

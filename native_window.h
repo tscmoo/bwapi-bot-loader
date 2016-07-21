@@ -13,6 +13,9 @@ namespace native_window {
 		window();
 		~window();
 		bool create(const char* title, DWORD style, DWORD ex_style, int x, int y, int width, int height);
+		void get_cursor_pos(int* x, int* y);
+		bool peek_message(MSG* msg);
+		bool show_cursor(bool show);
 	};
 }
 

@@ -231,10 +231,10 @@ struct IDirectDrawSurface {
 	// 25
 	static HRESULT STDCALL Lock(IDirectDrawSurface* self, RECT* rect, DDSURFACEDESC2* inout_desc, DWORD flags, HANDLE event) {
 		if (event) return DDERR_INVALIDPARAMS;
-		log("lock flags %#x, desc flags %#x\n", flags, inout_desc->dwFlags);
+		//log("lock flags %#x, desc flags %#x\n", flags, inout_desc->dwFlags);
 		if (rect) fatal_error("lock rect");
 		inout_desc->lpSurface = self->surf->lock();
-		log("locked surface is %p\n", (void*)inout_desc->lpSurface);
+		//log("locked surface is %p\n", (void*)inout_desc->lpSurface);
 		inout_desc->dwWidth = 640;
 		inout_desc->dwHeight = 480;
 		inout_desc->lPitch = 640;

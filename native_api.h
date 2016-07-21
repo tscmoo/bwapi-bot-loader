@@ -69,6 +69,7 @@ namespace native_api {
 		bool read(void* buffer, size_t size, size_t* read);
 		uint64_t set_pos(uint64_t pos, file_set_pos_origin origin);
 		uint64_t get_pos();
+		uint64_t get_size();
 	};
 
 	struct directory_io_impl;
@@ -93,6 +94,10 @@ namespace native_api {
 		directory_entry get();
 		bool next();
 	};
+
+	bool is_directory(const char* path);
+	bool is_file(const char* path);
+	bool delete_file(const char* path);
 
 	int32_t fetch_add(int32_t*);
 	bool compare_exchange(int64_t* pointer, int64_t& expected, int64_t desired);

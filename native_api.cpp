@@ -90,6 +90,11 @@ struct file_io_impl {
 		SetFilePointerEx(h, (LARGE_INTEGER&)move, &(LARGE_INTEGER&)r, FILE_CURRENT);
 		return r;
 	}
+	uint64_t get_size() {
+		uint64_t r = 0;
+		GetFileSizeEx(h, (LARGE_INTEGER*)&r);
+		return r;
+	}
 };
 
 struct directory_io_impl {
@@ -121,6 +126,22 @@ struct directory_io_impl {
 		return r;
 	}
 };
+
+bool is_directory(const char* path) {
+	DWORD attr = GetFileAttributesA(path);
+	if (attr == INVALID_FILE_ATTRIBUTES) return false;
+	return attr & FILE_ATTRIBUTE_DIRECTORY ? true : false;
+}
+
+bool is_file(const char* path) {
+	DWORD attr = GetFileAttributesA(path);
+	if (attr == INVALID_FILE_ATTRIBUTES) return false;
+	return ~attr & FILE_ATTRIBUTE_DIRECTORY ? true : false;
+}
+
+bool delete_file(const char* path) {
+	return DeleteFileA(path) ? true : false;
+}
 
 template<typename T, typename std::enable_if<sizeof(T) == sizeof(long)>::type* = nullptr>
 T fetch_add(T* ptr) {
@@ -351,6 +372,9 @@ uint64_t file_io::set_pos(uint64_t pos, file_set_pos_origin origin) {
 }
 uint64_t file_io::get_pos() {
 	return impl->get_pos();
+}
+uint64_t file_io::get_size() {
+	return impl->get_size();
 }
 
 directory_io::directory_io() {

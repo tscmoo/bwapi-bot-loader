@@ -11,6 +11,52 @@ using namespace wintypes;
 namespace user32 {
 ;
 
+
+using WNDPROC = LRESULT(STDCALL*)(HWND, UINT, WPARAM, LPARAM);
+
+struct WNDCLASSEXA {
+	UINT cbSize;
+	UINT style;
+	WNDPROC lpfnWndProc;
+	int cbClsExtra;
+	int cbWndExtra;
+	HINSTANCE hInstance;
+	void* hIcon;
+	void* hCursor;
+	void* hbrBackground;
+	const char* lpszMenuName;
+	const char* lpszClassName;
+	void* hIconSm;
+};
+
+struct window_class {
+	bool taken = false;
+	WNDPROC wnd_proc = nullptr;
+	std::string name;
+};
+
+std::vector<window_class> window_classes(0xffff);
+std::mutex windows_mut;
+
+struct window {
+	window_class* c = nullptr;
+	native_window::window w;
+};
+
+std::vector<std::unique_ptr<window>> all_windows(0x1000);
+
+window* get_window(HWND h) {
+	if (!h) return nullptr;
+	return (*(std::unique_ptr<window>*)h).get();
+}
+
+native_window::window* get_native_window(HWND h) {
+	auto* w = get_window(h);
+	if (!h) return nullptr;
+	return &w->w;
+}
+
+
 int WINAPI LoadStringA(HINSTANCE h, UINT id, char* buffer, int size) {
 	if (buffer && size) *buffer = 0;
 	log("LoadString %p %d %p %d; not supported\n", (void*)h, id, buffer, size);
@@ -42,8 +88,10 @@ void* WINAPI LoadCursorA(HINSTANCE h, const char* cursor_name) {
 	return nullptr;
 }
 
+HWND focus_window = nullptr32;
+
 HWND WINAPI GetForegroundWindow() {
-	return nullptr32;
+	return focus_window;
 }
 
 
@@ -388,9 +436,28 @@ BOOL WINAPI ClientToScreen(HWND h, POINT* inout) {
 	return TRUE;
 }
 
-BOOL WINAPI PeekMessageA(void* msg, HWND hwnd, UINT msg_filter_min, UINT msg_filter_max, UINT remove_msg) {
-	log("PeekMessage: not supported\n");
-	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+BOOL WINAPI PeekMessageA(MSG* msg, HWND hwnd, UINT msg_filter_min, UINT msg_filter_max, UINT remove_msg) {	
+	if (!hwnd) hwnd = focus_window;
+	auto* w = get_window(hwnd);
+	if (!w) {
+		log("PeekMessage: invalid handle %p\n", (void*)hwnd);
+		kernel32::SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	if (remove_msg != 1) fatal_error("PeekMessageA: fixme: remove_msg is %d", remove_msg);
+	memset(msg, 0, sizeof(*msg));
+	msg->hwnd = hwnd;
+	msg->time = kernel32::GetTickCount();
+	return w->w.peek_message(msg) ? TRUE : FALSE;
+}
+
+LRESULT WINAPI DispatchMessageA(const MSG* msg) {
+	auto* w = get_window(msg->hwnd);
+	if (!w) return 0;
+	return w->c->wnd_proc(msg->hwnd, msg->message, msg->wParam, msg->lParam);
+}
+
+BOOL WINAPI TranslateMessage(const MSG* msg) {
 	return FALSE;
 }
 
@@ -403,32 +470,6 @@ BOOL WINAPI GetClassInfoA(HINSTANCE h, const char* class_name, void* wnd_class) 
 	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
 	return FALSE;
 }
-
-using WNDPROC = LRESULT(STDCALL*)(HWND, UINT, WPARAM, LPARAM);
-
-struct WNDCLASSEXA {
-	UINT cbSize;
-	UINT style;
-	WNDPROC lpfnWndProc;
-	int cbClsExtra;
-	int cbWndExtra;
-	HINSTANCE hInstance;
-	void* hIcon;
-	void* hCursor;
-	void* hbrBackground;
-	const char* lpszMenuName;
-	const char* lpszClassName;
-	void* hIconSm;
-};
-
-struct window_class {
-	bool taken = false;
-	WNDPROC wnd_proc = nullptr;
-	std::string name;
-};
-
-std::vector<window_class> window_classes(0xffff);
-std::mutex windows_mut;
 
 ATOM WINAPI RegisterClassExA(const WNDCLASSEXA* cx) {
 	std::lock_guard<std::mutex> l(windows_mut);
@@ -466,22 +507,7 @@ int WINAPI GetSystemMetrics(int index) {
 	return 0;
 }
 
-struct window {
-	window_class* c = nullptr;
-	native_window::window w;
-};
-
-std::vector<std::unique_ptr<window>> all_windows(0x1000);
-
-window* get_window(HWND h) {
-	return (*(std::unique_ptr<window>*)h).get();
-}
-
-native_window::window* get_native_window(HWND h) {
-	auto* w = get_window(h);
-	if (!h) return nullptr;
-	return &w->w;
-}
+int show_cursor_count = 0;
 
 struct CREATESTRUCTA {
 	pointer32_T<void> lpCreateParams;
@@ -497,10 +523,6 @@ struct CREATESTRUCTA {
 	pointer32_T<const char> lpszClass;
 	DWORD dwExStyle;
 };
-
-LPARAM MAKELPARAM(WORD low, WORD high) {
-	return (LPARAM)low | ((LPARAM)high << 16);
-}
 
 HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* window_name, DWORD style, int x, int y, int width, int height, HWND parent, HWND menu, HINSTANCE hinstance, void* param) {
 	kernel32::SetLastError(ERROR_SUCCESS);
@@ -552,14 +574,17 @@ HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* 
 				v.reset();
 				return nullptr32;
 			}
-			c->wnd_proc((HWND)&v, WM_SIZE, 0, MAKELPARAM(width, height));
-			c->wnd_proc((HWND)&v, WM_MOVE, 0, MAKELPARAM(x, y));
-			c->wnd_proc((HWND)&v, WM_SHOWWINDOW, 0, 0);
-			c->wnd_proc((HWND)&v, WM_ACTIVATEAPP, 1, 0);
-			c->wnd_proc((HWND)&v, WM_ACTIVATE, 1, (HWND)&v);
-			c->wnd_proc((HWND)&v, WM_SETFOCUS, 0, 0);
-			log("created window %p\n", &v);
-			return (HWND)&v;
+			HWND wnd = (HWND)&v;
+			c->wnd_proc(wnd, WM_SIZE, 0, MAKELPARAM(width, height));
+			c->wnd_proc(wnd, WM_MOVE, 0, MAKELPARAM(x, y));
+			c->wnd_proc(wnd, WM_SHOWWINDOW, 0, 0);
+			c->wnd_proc(wnd, WM_ACTIVATEAPP, 1, 0);
+			c->wnd_proc(wnd, WM_ACTIVATE, 1, (HWND)&v);
+			focus_window = wnd;
+			c->wnd_proc(wnd, WM_SETFOCUS, 0, 0);
+			log("created window %p\n", (void*)wnd);
+			v->w.show_cursor(show_cursor_count >= 0);
+			return wnd;
 		}
 	}
 
@@ -620,9 +645,17 @@ BOOL WINAPI SetCursorPos(int x, int y) {
 }
 
 BOOL WINAPI GetCursorPos(POINT* r) {
-	r->x = 0;
-	r->y = 0;
-	return FALSE;
+	auto* w = get_window(focus_window);
+	if (!w) {
+		kernel32::SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	int x = 0;
+	int y = 0;
+	w->w.get_cursor_pos(&x, &y);
+	r->x = x;
+	r->y = y;
+	return TRUE;
 }
 
 BOOL WINAPI ClipCursor(RECT* rect) {
@@ -631,7 +664,12 @@ BOOL WINAPI ClipCursor(RECT* rect) {
 }
 
 int WINAPI ShowCursor(BOOL show) {
-	return show ? 1 : 0;
+	if (show) ++show_cursor_count;
+	else --show_cursor_count;
+	auto* w = get_window(focus_window);
+	if (!w) return show_cursor_count;
+	w->w.show_cursor(show_cursor_count >= 0) ? 1 : 0;
+	return show_cursor_count;
 }
 
 BOOL WINAPI IsIconic(HWND wnd) {
@@ -640,6 +678,31 @@ BOOL WINAPI IsIconic(HWND wnd) {
 
 BOOL WINAPI IsWindowVisible(HWND wnd) {
 	return TRUE;
+}
+
+HWND WINAPI SetCapture(HWND wnd) {
+	return nullptr32;
+}
+
+BOOL WINAPI ReleaseCapture() {
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
+
+BOOL WINAPI KillTimer(HWND wnd, UINT_PTR id) {
+	log("KillTimer %p %d\n", (void*)wnd, id);
+	kernel32::SetLastError(ERROR_INVALID_HANDLE);
+	return FALSE;
+}
+
+UINT_PTR WINAPI SetTimer(HWND wnd, UINT_PTR id, UINT timeout, void* func) {
+	log("SetTimer %p %d %d %p\n", (void*)wnd, id, timeout, func);
+	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
+	return 0;
+}
+
+BOOL WINAPI PtInRect(const RECT* rect, POINT point) {
+	return point.x >= rect->left && point.x < rect->right && point.y >= rect->top && point.y < rect->bottom ? TRUE : FALSE;
 }
 
 register_funcs funcs("user32", {
@@ -653,6 +716,8 @@ register_funcs funcs("user32", {
 	{ "SetRect", SetRect },
 	{ "ClientToScreen", ClientToScreen },
 	{ "PeekMessageA", PeekMessageA },
+	{ "DispatchMessageA", DispatchMessageA },
+	{ "TranslateMessage", TranslateMessage },
 	{ "RegisterClassA", RegisterClassA },
 	{ "GetClassInfoA", GetClassInfoA },
 	{ "RegisterClassExA", RegisterClassExA },
@@ -670,7 +735,12 @@ register_funcs funcs("user32", {
 	{ "ShowCursor", ShowCursor },
 	{ "ClipCursor", ClipCursor },
 	{ "IsIconic", IsIconic },
-	{ "IsWindowVisible", IsWindowVisible }
+	{ "IsWindowVisible", IsWindowVisible },
+	{ "SetCapture", SetCapture },
+	{ "ReleaseCapture", ReleaseCapture },
+	{ "KillTimer", KillTimer },
+	{ "SetTimer", SetTimer },
+	{ "PtInRect", PtInRect },
 });
 
 }

@@ -43,6 +43,47 @@ struct window_impl {
 		return window != nullptr;
 	}
 
+	void get_cursor_pos(int* x, int* y) {
+		SDL_GetMouseState(x, y);
+	}
+
+	bool peek_message(MSG* msg) {
+		SDL_Event e;
+		if (!SDL_PollEvent(&e)) return false;
+		if (e.type == SDL_MOUSEMOTION) {
+			msg->message = user32::WM_MOUSEMOVE;
+			msg->wParam = 0;
+			msg->lParam = MAKELPARAM(e.motion.x, e.motion.y);
+			return true;
+		} else if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) {
+			bool down = e.type == SDL_MOUSEBUTTONDOWN;
+			bool left = e.button.button == SDL_BUTTON_LEFT;
+			bool middle = e.button.button == SDL_BUTTON_MIDDLE;
+			bool right = e.button.button == SDL_BUTTON_RIGHT;
+			bool x1 = e.button.button == SDL_BUTTON_X1;
+			bool x2 = e.button.button == SDL_BUTTON_X2;
+
+			WPARAM w = 0;
+			auto state = SDL_GetMouseState(nullptr, nullptr);
+			if (state & SDL_BUTTON(SDL_BUTTON_LEFT)) w |= 1;
+			if (state & SDL_BUTTON(SDL_BUTTON_RIGHT)) w |= 2;
+
+			msg->lParam = MAKELPARAM(e.button.x, e.button.y);
+			if (left) {
+				msg->message = down ? user32::WM_LBUTTONDOWN : user32::WM_LBUTTONUP;
+				return true;
+			} else if (right) {
+				msg->message = down ? user32::WM_RBUTTONDOWN : user32::WM_RBUTTONUP;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool show_cursor(bool show) {
+		return SDL_ShowCursor(show ? SDL_ENABLE : SDL_DISABLE) ? true : false;
+	}
+
 };
 
 window::window() {
@@ -54,6 +95,18 @@ window::~window() {
 
 bool window::create(const char* title, DWORD style, DWORD ex_style, int x, int y, int width, int height) {
 	return impl->create(title, style, ex_style, x, y, width, height);
+}
+
+void window::get_cursor_pos(int* x, int* y) {
+	return impl->get_cursor_pos(x, y);
+}
+
+bool window::peek_message(MSG* msg) {
+	return impl->peek_message(msg);
+}
+
+bool window::show_cursor(bool show) {
+	return impl->show_cursor(show);
 }
 
 }
@@ -104,9 +157,6 @@ struct surface_impl : surface {
 		SDL_UnlockSurface(surf);
 		SDL_BlitSurface(surf, nullptr, window_s, nullptr);
 		SDL_UpdateWindowSurface(window);
-		SDL_Event e;
-		while (SDL_PollEvent(&e) != 0);
-
 	}
 };
 
