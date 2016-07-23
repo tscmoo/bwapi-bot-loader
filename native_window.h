@@ -16,6 +16,7 @@ namespace native_window {
 		void get_cursor_pos(int* x, int* y);
 		bool peek_message(MSG* msg);
 		bool show_cursor(bool show);
+		bool get_key_state(int vkey);
 	};
 }
 

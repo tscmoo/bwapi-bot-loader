@@ -47,7 +47,8 @@ namespace native_api {
 
 	enum class file_open_mode {
 		open_existing,
-		create_new
+		create_new,
+		create_always
 	};
 
 	enum class file_set_pos_origin {
@@ -67,6 +68,7 @@ namespace native_api {
 		file_io& operator=(file_io&& n);
 		bool open(const char* fn, file_access access, file_open_mode mode);
 		bool read(void* buffer, size_t size, size_t* read);
+		bool write(void* buffer, size_t size, size_t* written);
 		uint64_t set_pos(uint64_t pos, file_set_pos_origin origin);
 		uint64_t get_pos();
 		uint64_t get_size();
@@ -98,6 +100,7 @@ namespace native_api {
 	bool is_directory(const char* path);
 	bool is_file(const char* path);
 	bool delete_file(const char* path);
+	bool create_directory(const char* path);
 
 	int32_t fetch_add(int32_t*);
 	bool compare_exchange(int64_t* pointer, int64_t& expected, int64_t desired);

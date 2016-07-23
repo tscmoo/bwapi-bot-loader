@@ -67,6 +67,7 @@ struct file_io_impl {
 		DWORD creation_disposition = OPEN_EXISTING;
 		if (mode == file_open_mode::open_existing) creation_disposition = OPEN_EXISTING;
 		if (mode == file_open_mode::create_new) creation_disposition = CREATE_NEW;
+		if (mode == file_open_mode::create_always) creation_disposition = CREATE_ALWAYS;
 		h = CreateFileA(fn, desired_access, FILE_SHARE_READ, nullptr, creation_disposition, 0, nullptr);
 		return h != INVALID_HANDLE_VALUE;
 	}
@@ -74,6 +75,12 @@ struct file_io_impl {
 		DWORD dw_read = 0;
 		BOOL r = ReadFile(h, buffer, size, &dw_read, nullptr);
 		*read = (size_t)dw_read;
+		return r != FALSE;
+	}
+	bool write(void* buffer, size_t size, size_t* written) {
+		DWORD dw_written = 0;
+		BOOL r = WriteFile(h, buffer, size, &dw_written, nullptr);
+		*written = (size_t)dw_written;
 		return r != FALSE;
 	}
 	uint64_t set_pos(uint64_t pos, file_set_pos_origin origin) {
@@ -141,6 +148,10 @@ bool is_file(const char* path) {
 
 bool delete_file(const char* path) {
 	return DeleteFileA(path) ? true : false;
+}
+
+bool create_directory(const char* path) {
+	return CreateDirectoryA(path, nullptr) ? true : false;
 }
 
 template<typename T, typename std::enable_if<sizeof(T) == sizeof(long)>::type* = nullptr>
@@ -255,6 +266,7 @@ struct file_io_impl {
 		else if (access == file_access::read_write) flags |= O_RDWR;
 		if (mode == file_open_mode::open_existing) flags |= 0;
 		if (mode == file_open_mode::create_new) flags |= O_CREAT | O_EXCL;
+		if (mode == file_open_mode::create_always) flags |= O_CREAT | O_TRUNC;
 		fd = open64(fn, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
 		return fd >= 0;
 	}
@@ -263,6 +275,15 @@ struct file_io_impl {
 		auto r = ::read(fd, buffer, size);
 		if (r >= 0 && r <= size) {
 			*out_read = (size_t)r;
+			return true;
+		}
+		return false;
+	}
+	bool write(void* buffer, size_t size, size_t* out_written) {
+		*out_written = 0;
+		auto r = ::write(fd, buffer, size);
+		if (r >= 0 && r <= size) {
+			*out_written = (size_t)r;
 			return true;
 		}
 		return false;
@@ -278,6 +299,14 @@ struct file_io_impl {
 	uint64_t get_pos() {
 		auto r = lseek64(fd, 0, SEEK_CUR);
 		if (r < 0) r = 0;
+		return r;
+	}
+		uint64_t get_size() {
+		uint64_t r = 0;
+		struct stat st;
+		if (fstat(fd, &st) == 0) {
+			r = (uint64_t)st.st_size;
+		}
 		return r;
 	}
 };
@@ -321,6 +350,26 @@ struct directory_io_impl {
 		return r;
 	}
 };
+
+bool is_directory(const char* path) {
+	struct stat st;
+	if (stat(path, &st) != 0) return false;
+	return S_ISDIR(st.st_mode);
+}
+
+bool is_file(const char* path) {
+	struct stat st;
+	if (stat(path, &st) != 0) return false;
+	return !S_ISDIR(st.st_mode);
+}
+
+bool delete_file(const char* path) {
+	return unlink(path) == 0;
+}
+
+bool create_directory(const char* path) {
+	return mkdir(path, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+}
 
 template<typename T>
 T fetch_add(T* ptr) {
@@ -367,6 +416,9 @@ bool file_io::open(const char* fn, file_access access, file_open_mode mode) {
 bool file_io::read(void* buffer, size_t size, size_t* read) {
 	return impl->read(buffer, size, read);
 }
+bool file_io::write(void* buffer, size_t size, size_t* written) {
+	return impl->write(buffer, size, written);
+}
 uint64_t file_io::set_pos(uint64_t pos, file_set_pos_origin origin) {
 	return impl->set_pos(pos, origin);
 }
@@ -394,19 +446,19 @@ bool directory_io::next() {
 	return impl->next();
 }
 
-shm_io::shm_io() {
-	impl = std::make_unique<shm_io_impl>();
-}
-shm_io::shm_io(shm_io&& n) = default;
-shm_io::~shm_io() {
-}
-shm_io& shm_io::operator=(shm_io&& n) = default;
-bool shm_io::open(const char* fn, uint64_t size) {
-	return impl->open(fn, size);
-}
-void* shm_io::map(void* addr, uint64_t offset, size_t size, int flags) {
-	return impl->map(addr, offset, size, flags);
-}
+// shm_io::shm_io() {
+// 	impl = std::make_unique<shm_io_impl>();
+// }
+// shm_io::shm_io(shm_io&& n) = default;
+// shm_io::~shm_io() {
+// }
+// shm_io& shm_io::operator=(shm_io&& n) = default;
+// bool shm_io::open(const char* fn, uint64_t size) {
+// 	return impl->open(fn, size);
+// }
+// void* shm_io::map(void* addr, uint64_t offset, size_t size, int flags) {
+// 	return impl->map(addr, offset, size, flags);
+// }
 
 }
 

@@ -535,13 +535,14 @@ void WINAPI InitializeCriticalSection(CRITICAL_SECTION* cs) {
 	cs->SpinCount = 0;
 }
 
- void WINAPI InitializeCriticalSectionAndSpinCount(CRITICAL_SECTION* cs, DWORD SpinCount) {
+ BOOL WINAPI InitializeCriticalSectionAndSpinCount(CRITICAL_SECTION* cs, DWORD SpinCount) {
 	cs->DebugInfo = nullptr;
 	cs->LockCount = -1;
 	cs->RecursionCount = 0;
 	cs->OwningThread = nullptr32;
 	cs->LockSemaphore = to_pointer32(new std::recursive_mutex()); // fixme pointer
 	cs->SpinCount = SpinCount;
+	return TRUE;
 }
 
 void WINAPI DeleteCriticalSection(CRITICAL_SECTION* cs) {
@@ -692,6 +693,7 @@ struct file : object {
 	std::function<uint64_t(uint64_t offset, MOVE_METHOD method)> set_pos;
 	std::function<uint64_t()> get_pos;
 	std::function<bool(void* buffer, size_t to_read, size_t* read)> read;
+	std::function<bool(void* buffer, size_t to_write, size_t* written)> write;
 	std::function<uint64_t()> get_size;
 };
 
@@ -1218,29 +1220,28 @@ struct thread : object {
 
 class sleep_queue {
 	std::mutex mut;
-	using queue_t = intrusive_list<thread, void, &thread::sleep_queue_link>;
+	using queue_t = std::list<thread*>;
 	queue_t queue;
 public:
 	struct queue_unlinker {
+		queue_t& q;
 		queue_t::iterator iterator;
 		~queue_unlinker() {
-			if (iterator != queue_t::iterator()) queue_t::erase(iterator);
+			if (iterator != queue_t::iterator()) q.erase(iterator);
 		}
 	};
 	template<typename pred_T>
 	void wait(pred_T&& pred) {
 		auto t = tlb.current_thread;
 		std::unique_lock<std::mutex> ml(mut);
-		if (pred()) return;
-		queue_unlinker unlinker { queue.insert(queue.end(), *t) };
+		queue_unlinker unlinker { queue, queue.insert(queue.end(), t) };
 		t->wait_cv.wait(ml, std::forward<pred_T>(pred));
 	}
 	template<typename rep, typename period, typename pred_T>
 	bool wait_for(const std::chrono::duration<rep, period>& timeout_duration, pred_T&& pred) {
 		auto t = tlb.current_thread;
 		std::unique_lock<std::mutex> ml(mut);
-		if (pred()) return true;
-		queue_unlinker unlinker { queue.insert(queue.end(), *t) };
+		queue_unlinker unlinker { queue, queue.insert(queue.end(), t) };
 		return t->wait_cv.wait_for(ml, timeout_duration, std::forward<pred_T>(pred));
 	}
 	void notify_one() {
@@ -1248,28 +1249,44 @@ public:
 	}
 	void notify_all() {
 		std::lock_guard<std::mutex> ml(mut);
-		for (auto& v : queue) {
-			std::lock_guard<std::mutex> tl(v.wait_mut);
-			v.wait_cv.notify_all();
+		for (auto* v : queue) {
+			std::lock_guard<std::mutex> tl(v->wait_mut);
+			v->wait_cv.notify_all();
 		}
 	}
 	bool empty() {
 		std::lock_guard<std::mutex> l(mut);
 		return queue.empty();
 	}
+
+	struct wait_multiple_unlinker {
+		std::vector<std::pair<std::unique_lock<std::mutex>, queue_t::iterator>>& locks_and_iterators;
+		std::unique_lock<std::mutex>& l;
+		sleep_queue** queues;
+		size_t n;
+		~wait_multiple_unlinker() {
+			l.unlock();
+			for (size_t i = 0; i < locks_and_iterators.size(); ++i) {
+				auto& v = locks_and_iterators[i];
+				if (!v.first.owns_lock()) v.first.lock();
+				queues[i]->queue.erase(v.second);
+				v.first.unlock();
+			}
+		}
+	};
 	template<typename rep, typename period, typename pred_T>
 	static bool wait_multiple(size_t n, sleep_queue** queues, const std::chrono::duration<rep, period>& timeout_duration, pred_T&& pred) {
 		auto t = tlb.current_thread;
-		std::vector<std::pair<std::unique_lock<std::mutex>, queue_unlinker>> locks_and_unlinkers;
+		std::vector<std::pair<std::unique_lock<std::mutex>, queue_t::iterator>> locks_and_iterators;
 		for (size_t i = 0; i < n; ++i) {
-			locks_and_unlinkers.emplace_back(std::piecewise_construct, std::tie(queues[i]->mut), std::tie());
+			locks_and_iterators.emplace_back(std::piecewise_construct, std::tie(queues[i]->mut), std::tie());
 		}
-		if (pred()) return true;
 		std::unique_lock<std::mutex> l(t->wait_mut);
+		wait_multiple_unlinker unlinker { locks_and_iterators, l, queues, n };
 		for (size_t i = 0; i < n; ++i) {
-			auto& v = locks_and_unlinkers[i];
+			auto& v = locks_and_iterators[i];
 			auto& q = queues[i]->queue;
-			v.second = queue_unlinker { q.insert(q.end(), *t) };
+			v.second = q.insert(q.end(), t);
 			v.first.unlock();
 		}
 		return t->wait_cv.wait_for(l, timeout_duration, std::forward<pred_T>(pred));
@@ -1492,11 +1509,8 @@ HANDLE WINAPI CreateFileA(const char* filename, DWORD access, DWORD share_mode, 
 
 	native_api::file_open_mode open_mode;
 	if (creation_disposition == CREATE_NEW) open_mode = native_api::file_open_mode::create_new;
-	else if (creation_disposition == CREATE_ALWAYS) {
-		log("CreateFile: CREATE_ALWAYS not supported\n");
-		SetLastError(ERROR_NOT_SUPPORTED);
-		return INVALID_HANDLE_VALUE;
-	} else if (creation_disposition == OPEN_EXISTING) open_mode = native_api::file_open_mode::open_existing;
+	else if (creation_disposition == CREATE_ALWAYS) open_mode = native_api::file_open_mode::create_always;
+	else if (creation_disposition == OPEN_EXISTING) open_mode = native_api::file_open_mode::open_existing;
 	else if (creation_disposition == OPEN_ALWAYS) {
 		log("CreateFile: OPEN_ALWAYS not supported\n");
 		SetLastError(ERROR_NOT_SUPPORTED);
@@ -1536,6 +1550,13 @@ HANDLE WINAPI CreateFileA(const char* filename, DWORD access, DWORD share_mode, 
 		bool r = f->read(buffer, to_read, read);
 		if (!r) {
 			SetLastError(ERROR_READ_FAULT);
+		}
+		return r;
+	};
+	o->write = [f](void* buffer, size_t to_write, size_t* written) {
+		bool r = f->write(buffer, to_write, written);
+		if (!r) {
+			SetLastError(ERROR_WRITE_FAULT);
 		}
 		return r;
 	};
@@ -1586,6 +1607,26 @@ BOOL WINAPI ReadFile(HANDLE h, void* buffer, DWORD to_read, DWORD* read, void* o
 	bool success = o->read(buffer, (size_t)to_read, &n_read);
 	*read = (DWORD)n_read;
 	log("ReadFile %p %p %d %p -> %d (%d read)\n", (void*)h, buffer, to_read, read, success, n_read);
+	return success ? TRUE : FALSE;
+}
+
+BOOL WINAPI WriteFile(HANDLE h, void* buffer, DWORD to_write, DWORD* written, void* overlapped) {
+	if (written) *written = 0;
+	auto o = get_object<file>(h);
+	if (!o) {
+		SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	if (!o->write) {
+		log("WriteFile: no write for object\n");
+		SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	size_t n_written = 0;
+	SetLastError(ERROR_SUCCESS);
+	bool success = o->write(buffer, (size_t)to_write, &n_written);
+	*written = (DWORD)n_written;
+	log("WriteFile %p %p %d %p -> %d (%d written)\n", (void*)h, buffer, to_write, written, success, n_written);
 	return success ? TRUE : FALSE;
 }
 
@@ -1886,6 +1927,10 @@ DWORD WINAPI WaitForMultipleObjects(DWORD count, const HANDLE* input_handles, BO
 		}
 		return n_signalled >= req_signalled;
 	};
+	if (pred()) {
+		log("thread %#x did not have to wait for multiple objects\n");
+		return wait_for_all ? WAIT_OBJECT_0 : WAIT_OBJECT_0 + first_signalled;
+	}
 	std::chrono::milliseconds timeout_duration(milliseconds);
 	if (milliseconds == (DWORD)-1) timeout_duration = std::chrono::hours(1);
 	if (!sleep_queue::wait_multiple(n, queues.data(), timeout_duration, pred)) {
@@ -2105,22 +2150,25 @@ UINT WINAPI SetErrorMode() {
 	return 0;
 }
 
-UINT WINAPI GetProfileIntA(const char* appname, const char* keyname, INT default) {
-	log("GetProfileIntA %s %s %d\n", appname, keyname, default);
-	return default;
+UINT WINAPI GetProfileIntA(const char* appname, const char* keyname, INT default_value) {
+	log("GetProfileIntA %s %s %d\n", appname, keyname, default_value);
+	return default_value;
 }
 
 BOOL WINAPI CreateDirectoryA(const char* name, void* security_attributes) {
 	log("create directory %s\n", name);
-	SetLastError(ERROR_ALREADY_EXISTS);
-	return FALSE;
+	if (!native_api::create_directory(name)) {
+		SetLastError(ERROR_ALREADY_EXISTS);
+		return FALSE;
+	}
+	return TRUE;
 }
 
 void* WINAPI FindResourceA(HMODULE hm, const char* name, const char* type) {
 	auto* i = hm ? modules::get_module_info((void*)hm) : main_module_info;
 	if (!i) {
 		SetLastError(ERROR_MOD_NOT_FOUND);
-		return nullptr32;
+		return nullptr;
 	}
 	bool name_is_id = (uintptr_t)name < 0x10000;
 	DWORD name_id = (uintptr_t)name & 0xffff;
@@ -2280,6 +2328,7 @@ register_funcs funcs("kernel32", {
 	{ "CreateFileW", wtoa_function(CreateFileA) },
 	{ "SetFilePointer", SetFilePointer },
 	{ "ReadFile", ReadFile },
+	{ "WriteFile", WriteFile },
 	{ "GetFileSize", GetFileSize },
 	{ "InterlockedIncrement", InterlockedIncrement },
 	{ "GetProcessHeap", GetProcessHeap },

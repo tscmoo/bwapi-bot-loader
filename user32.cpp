@@ -9,6 +9,8 @@ using namespace wintypes;
 #include <mutex>
 #include <map>
 #include <set>
+#include <thread>
+#include <condition_variable>
 
 namespace user32 {
 ;
@@ -484,6 +486,14 @@ LRESULT WINAPI DispatchMessageA(const MSG* msg) {
 }
 
 BOOL WINAPI TranslateMessage(const MSG* msg) {
+	if (msg->message == WM_KEYDOWN) {
+		if (msg->wParam == 0x8 || msg->wParam == 0xd || msg->wParam == 0x1b || msg->wParam == 0x9) {
+			MSG char_msg = *msg;
+			char_msg.message = WM_CHAR;
+			DispatchMessageA(&char_msg);
+			return TRUE;
+		}
+	}
 	return FALSE;
 }
 
@@ -601,12 +611,12 @@ HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* 
 				return nullptr32;
 			}
 			HWND wnd = (HWND)&v;
+			focus_window = wnd;
 			c->wnd_proc(wnd, WM_SIZE, 0, MAKELPARAM(width, height));
 			c->wnd_proc(wnd, WM_MOVE, 0, MAKELPARAM(x, y));
 			c->wnd_proc(wnd, WM_SHOWWINDOW, 0, 0);
 			c->wnd_proc(wnd, WM_ACTIVATEAPP, 1, 0);
 			c->wnd_proc(wnd, WM_ACTIVATE, 1, (HWND)&v);
-			focus_window = wnd;
 			c->wnd_proc(wnd, WM_SETFOCUS, 0, 0);
 			log("created window %p\n", (void*)wnd);
 			v->w.show_cursor(show_cursor_count >= 0);
@@ -679,6 +689,8 @@ BOOL WINAPI SetCursorPos(int x, int y) {
 BOOL WINAPI GetCursorPos(POINT* r) {
 	auto* w = get_window(focus_window);
 	if (!w) {
+		r->x = 0;
+		r->y = 0;
 		kernel32::SetLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
@@ -791,6 +803,16 @@ BOOL WINAPI PtInRect(const RECT* rect, POINT point) {
 	return point.x >= rect->left && point.x < rect->right && point.y >= rect->top && point.y < rect->bottom ? TRUE : FALSE;
 }
 
+SHORT WINAPI GetKeyState(int vkey) {
+	auto* w = get_window(focus_window);
+	if (!w) {
+		return 0;
+	}
+	SHORT r = 0;
+	if (w->w.get_key_state(vkey)) r |= 0x8000;
+	return r;
+}
+
 register_funcs funcs("user32", {
 	{ "LoadStringA", LoadStringA },
 	{ "LoadAcceleratorsA", LoadAcceleratorsA },
@@ -827,6 +849,7 @@ register_funcs funcs("user32", {
 	{ "KillTimer", KillTimer },
 	{ "SetTimer", SetTimer },
 	{ "PtInRect", PtInRect },
+	{ "GetKeyState", GetKeyState },
 });
 
 }

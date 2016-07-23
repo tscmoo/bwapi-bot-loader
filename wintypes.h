@@ -68,7 +68,7 @@ namespace wintypes {
 		bool operator!=(const T2& n) const {
 			return (uintptr_t)value == (uintptr_t)(T*)n;
 		}
-		template<typename T1 = T, typename std::enable_if<!std::is_same<T1, void>::value>::type* = nullptr, typename T2 = std::conditional<std::is_same<T1, void>, int, T1>::type>
+		template<typename T1 = T, typename std::enable_if<!std::is_same<T1, void>::value>::type* = nullptr, typename T2 = typename std::conditional<std::is_same<T1, void>::value, int, T1>::type>
 		T2& operator*() const {
 			return *(T2*)value;
 		}
@@ -116,6 +116,7 @@ namespace wintypes {
 		ERROR_PATH_NOT_FOUND = 3,
 		ERROR_INVALID_HANDLE = 6,
 		ERROR_NOT_ENOUGH_MEMORY = 8,
+		ERROR_WRITE_FAULT = 30,
 		ERROR_READ_FAULT = 30,
 		ERROR_NOT_SUPPORTED = 50,
 		ERROR_INVALID_PARAMETER = 87,
