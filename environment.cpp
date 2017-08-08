@@ -18,19 +18,6 @@ using namespace wintypes;
 
 namespace environment {
 
-struct TIB {
-	void* seh = nullptr;
-	void* stack_bot = nullptr;
-	void* stack_top = nullptr;
-	void* subsystem_tib = nullptr;
-	void* fiber_data = nullptr;
-	void* data_slot = nullptr;
-	void* this_tib = nullptr;
-	std::array<char, 0x100> filler;
-	void* old_fs_value = nullptr;
-	void* retaddr = nullptr;
-};
-
 #ifndef _WIN32
 thread_local TIB tib;
 #endif
@@ -79,7 +66,7 @@ void generate_cpuid(uint8_t*& p) {
 	p += 0x1e;
 }
 
-void enter_thread(const std::function<void()>& f) {
+void enter_thread(const std::function<void()>& f, bool create_stack) {
 #ifndef _WIN32
 	user_desc ldt = { (unsigned int)-1, (unsigned int)&tib, 0xfff, 1, 0, 0, 1, 0, 1 };
 	int r = syscall(SYS_set_thread_area, &ldt);
@@ -87,6 +74,11 @@ void enter_thread(const std::function<void()>& f) {
 	set_fs((ldt.entry_number << 3) | 3);
 	tib.this_tib = &tib;
 #endif
+	
+	if (!create_stack) {
+		f();
+		return;
+	}
 
 	size_t stack_size = 2 * 1024 * 1024;
 
@@ -161,7 +153,7 @@ void* generate_unimplemented_stub(std::string name) {
 	p = (uint8_t*)(((uintptr_t)p + 3) & -4);
 	auto* r = p;
 
-	*p++ = 0x68; // push mem
+	*p++ = 0x68; // push next_unimplemented_stub
 	*(uint32_t*)p = (uint32_t)next_unimplemented_stub;
 	p += 4;
 	*p++ = 0xe8; // call unimplemented_stub

@@ -95,11 +95,11 @@ module_info* load_module(const char* path, bool overwrite) {
 
 	auto IMAGE_FILE_RELOCS_STRIPPED = 1;
 
-	if (fh.Characteristics&IMAGE_FILE_RELOCS_STRIPPED) {
+	if (fh.Characteristics & IMAGE_FILE_RELOCS_STRIPPED) {
 		if (!overwrite) {
 			if (!addr) log("failed to allocate memory at the required address %08X\n", oh.ImageBase);
 		} else {
-			addr = (void*)oh.ImageBase;
+			addr = (void*)(uintptr_t)oh.ImageBase;
 			if (!native_api::set_memory_access(addr, image_size, native_api::memory_access::read_write_execute)) {
 				log("failed to set memory access protection\n");
 			}
@@ -107,6 +107,7 @@ module_info* load_module(const char* path, bool overwrite) {
 	} else {
 		addr_handle.ptr = kernel32::virtual_allocate(nullptr, image_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE, modules_start_addr);
 		addr = addr_handle.ptr;
+		assert_32bit(addr);
 	}
 	if (!addr) return nullptr;
 
@@ -131,12 +132,12 @@ module_info* load_module(const char* path, bool overwrite) {
 	while (pos < oh.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size) {
 		IMAGE_BASE_RELOCATION* r = (IMAGE_BASE_RELOCATION*)(relocs + pos);
 		pos += r->SizeOfBlock;
-		WORD*w = (WORD*)(r + 1);
+		WORD* w = (WORD*)(r + 1);
 		while ((uint8_t*)w < relocs + pos) {
 			auto IMAGE_REL_BASED_HIGHLOW = 3;
 			if (*w >> 12 == IMAGE_REL_BASED_HIGHLOW) {
-				DWORD*target = (DWORD*)((uint8_t*)addr + r->VirtualAddress + (*w & 0xfff));
-				*target -= oh.ImageBase - (DWORD)addr;
+				DWORD* target = (DWORD*)((uint8_t*)addr + r->VirtualAddress + (*w & 0xfff));
+				*target -= oh.ImageBase - (DWORD)(uintptr_t)addr;
 			}
 			++w;
 		}
@@ -188,7 +189,7 @@ module_info* load_module(const char* path, bool overwrite) {
 			else r->exports.push_back(nullptr);
 		}
 		for (size_t i = 0; i < exportd->NumberOfNames; ++i) {
-			log("export name '%s'\n", (char*)(uint8_t*)addr + names[i]);
+			//log("export name '%s'\n", (char*)(uint8_t*)addr + names[i]);
 			r->export_names[(char*)(uint8_t*)addr + names[i]] = name_ordinals[i];
 		}
 	}
@@ -230,7 +231,13 @@ module_info* load_module(const char* path, bool overwrite) {
 					}
 				} else {
 					const char* name = (const char*)addr + *dw + 2;
-					log("import '%s'?\n", name);
+					//log("import '%s'?\n", name);
+					auto i = mi->export_names.find(name);
+					if (i != mi->export_names.end()) {
+						if (i->second < mi->exports.size()) {
+							proc = mi->exports[i->second];
+						}
+					}
 				}
 			}
 			if (!proc) proc = environment::get_unimplemented_stub(fullname);
@@ -327,7 +334,6 @@ module_info* load_library(const char* path, bool is_load_time, bool fake_if_nece
 			void* base = i->base;
 			int load_time = is_load_time ? 1 : 0;
 			BOOL r = ((BOOL(WINAPI*)(void*, DWORD, int))entry)(base, 1, load_time);
-			log("entry point for %p returned\n", i->base);
 			if (!r) fatal_error("DllEntryPoint for '%s' failed", i->full_path);
 		} else {
 			dll_entries_to_call.emplace_back(i, is_load_time);
@@ -343,6 +349,7 @@ module_info* load_library(const char* path, bool is_load_time, bool fake_if_nece
 			log("entry point for %p returned\n", v.first->base);
 			if (!r) fatal_error("DllEntryPoint for '%s' failed", v.first->full_path);
 		}
+		dll_entries_to_call.clear();
 		is_loading = false;
 	}
 	return i;
@@ -379,6 +386,39 @@ module_info* load_main(const char* path, bool overwrite) {
 				((void(*)())i->entry)();
 			});
 		});
+	}
+	return i;
+}
+
+module_info* load_fake_main(const char* name, std::function<void()> entry) {
+	module_info* i = nullptr;
+	std::list<std::pair<module_info*, bool>> dll_entries;
+	{
+		std::lock_guard<std::recursive_mutex> l(load_mut);
+		if (is_loading) fatal_error("load_fake_main: is_loading is set");
+		if (!loaded_modules.empty()) fatal_error("load_fake_main: loaded modules is not empty");
+		is_loading = true;
+		i = load_fake_module(name);
+		dll_entries = std::move(dll_entries_to_call);
+		dll_entries_to_call.clear();
+		is_loading = false;
+	}
+	if (i) {
+		environment::enter_thread([&]() {
+			kernel32::enter_main_thread([&]() {
+				for (auto& v : dll_entries) {
+					log("calling entry point for %p\n", v.first->base);
+					void* entry = v.first->entry;
+					void* base = v.first->base;
+					int load_time = v.second ? 1 : 0;
+					BOOL r = ((BOOL(WINAPI*)(void*, DWORD, int))entry)(base, 1, load_time);
+					log("entry point for %p returned\n", v.first->base);
+					if (!r) fatal_error("DllEntryPoint for '%s' failed", v.first->full_path);
+				}
+				if (pre_entry_callback) pre_entry_callback();
+				entry();
+			});
+		}, false);
 	}
 	return i;
 }

@@ -32,6 +32,9 @@ namespace kernel32 {
 	void WINAPI Sleep(DWORD milliseconds);
 	DWORD WINAPI GetTickCount();
 	ULONGLONG WINAPI GetTickCount64();
+
+	HMODULE WINAPI LoadLibraryA(const char* name);
+	void* WINAPI GetProcAddress(HMODULE hm, const char* name);
 }
 
 #endif

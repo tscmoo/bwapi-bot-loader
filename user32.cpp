@@ -64,7 +64,7 @@ std::vector<std::unique_ptr<window>> all_windows(0x1000);
 
 window* get_window(HWND h) {
 	if (!h) return nullptr;
-	return (*(std::unique_ptr<window>*)h).get();
+	return (*(std::unique_ptr<window>*)to_pointer(h)).get();
 }
 
 native_window::window* get_native_window(HWND h) {
@@ -76,31 +76,31 @@ native_window::window* get_native_window(HWND h) {
 
 int WINAPI LoadStringA(HINSTANCE h, UINT id, char* buffer, int size) {
 	if (buffer && size) *buffer = 0;
-	log("LoadString %p %d %p %d; not supported\n", (void*)h, id, buffer, size);
+	log("LoadString %p %d %p %d; not supported\n", to_pointer(h), id, buffer, size);
 	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
 	return 0;
 }
 
 void* WINAPI LoadAcceleratorsA(HINSTANCE h, const char* table_name) {
-	log("LoadAccelerators %p %p; not supported\n", (void*)h, table_name);
+	log("LoadAccelerators %p %p; not supported\n", to_pointer(h), table_name);
 	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
 	return nullptr;
 }
 
 void* WINAPI LoadIconA(HINSTANCE h, const char* icon_name) {
-	log("LoadIcon %p %p; not supported\n", (void*)h, icon_name);
+	log("LoadIcon %p %p; not supported\n", to_pointer(h), icon_name);
 	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
 	return nullptr;
 }
 
 HANDLE WINAPI LoadImageA(HINSTANCE h, const char* name, UINT type, int width, int height, UINT load) {
-	log("LoadImage %p %p %d %d %d %d; not supported\n", (void*)h, name, type, width, height, load);
+	log("LoadImage %p %p %d %d %d %d; not supported\n", to_pointer(h), name, type, width, height, load);
 	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
 	return nullptr32;
 }
 
 void* WINAPI LoadCursorA(HINSTANCE h, const char* cursor_name) {
-	log("LoadCursor %p %p; not supported\n", (void*)h, cursor_name);
+	log("LoadCursor %p %p; not supported\n", to_pointer(h), cursor_name);
 	kernel32::SetLastError(ERROR_NOT_SUPPORTED);
 	return nullptr;
 }
@@ -457,7 +457,7 @@ BOOL WINAPI PeekMessageA(MSG* msg, HWND hwnd, UINT msg_filter_min, UINT msg_filt
 	if (!hwnd) hwnd = focus_window;
 	auto* w = get_window(hwnd);
 	if (!w) {
-		log("PeekMessage: invalid handle %p\n", (void*)hwnd);
+		log("PeekMessage: invalid handle %p\n", to_pointer(hwnd));
 		kernel32::SetLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
@@ -473,7 +473,7 @@ BOOL WINAPI PeekMessageA(MSG* msg, HWND hwnd, UINT msg_filter_min, UINT msg_filt
 		w->triggered_timers.erase(i);
 		msg->message = WM_TIMER;
 		msg->wParam = id;
-		msg->lParam = (LPARAM)proc;
+		msg->lParam = (LPARAM)to_pointer32((void*)proc);
 		return TRUE;
 	}
 	return FALSE;
@@ -576,7 +576,7 @@ HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* 
 			}
 		}
 	}
-	log("CreateWindowEx %#x '%s' '%s' %#x %d %d %d %d %p %p %p %p\n", ex_style, class_name, window_name, style, x, y, width, height, (void*)parent, (void*)menu, (void*)hinstance, param);
+	log("CreateWindowEx %#x '%s' '%s' %#x %d %d %d %d %p %p %p %p\n", ex_style, class_name, window_name, style, x, y, width, height, to_pointer(parent), to_pointer(menu), to_pointer(hinstance), param);
 	window_class* c = nullptr;
 	if (atom - 1 < window_classes.size()) c = &window_classes[atom - 1];
 	if (!c || !c->taken) {
@@ -596,7 +596,7 @@ HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* 
 			CREATESTRUCTA cs;
 			cs.lpCreateParams = param;
 			cs.hInstance = hinstance;
-			cs.hMenu = (void*)menu;
+			cs.hMenu = to_pointer(menu);
 			cs.hwndParent = parent;
 			cs.cy = height;
 			cs.cx = width;
@@ -606,19 +606,19 @@ HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* 
 			cs.lpszName = window_name;
 			cs.lpszClass = class_name;
 			cs.dwExStyle = ex_style;
-			if (c->wnd_proc((HWND)&v, WM_CREATE, 0, (LPARAM)&cs) == -1) {
+			if (c->wnd_proc((HWND)to_pointer32(&v), WM_CREATE, 0, (LPARAM)to_pointer32(&cs)) == -1) {
 				v.reset();
 				return nullptr32;
 			}
-			HWND wnd = (HWND)&v;
+			HWND wnd = (HWND)to_pointer32(&v);
 			focus_window = wnd;
 			c->wnd_proc(wnd, WM_SIZE, 0, MAKELPARAM(width, height));
 			c->wnd_proc(wnd, WM_MOVE, 0, MAKELPARAM(x, y));
 			c->wnd_proc(wnd, WM_SHOWWINDOW, 0, 0);
 			c->wnd_proc(wnd, WM_ACTIVATEAPP, 1, 0);
-			c->wnd_proc(wnd, WM_ACTIVATE, 1, (HWND)&v);
+			c->wnd_proc(wnd, WM_ACTIVATE, 1, (HWND)to_pointer32(&v));
 			c->wnd_proc(wnd, WM_SETFOCUS, 0, 0);
-			log("created window %p\n", (void*)wnd);
+			log("created window %p\n", to_pointer(wnd));
 			v->w.show_cursor(show_cursor_count >= 0);
 			return wnd;
 		}
@@ -630,7 +630,7 @@ HWND WINAPI CreateWindowExA(DWORD ex_style, const char* class_name, const char* 
 
 LRESULT WINAPI DefWindowProcA(HWND h, UINT msg, WPARAM wparam, LPARAM lparam) {
 	if (msg == WM_TIMER) {
-		TIMERPROC proc = (TIMERPROC)lparam;
+		TIMERPROC proc = (TIMERPROC)to_pointer(lparam);
 		log("DefWindowProc: timer proc %p\n", proc);
 		proc(h, msg, wparam, kernel32::GetTickCount());
 		return 0;
@@ -639,7 +639,7 @@ LRESULT WINAPI DefWindowProcA(HWND h, UINT msg, WPARAM wparam, LPARAM lparam) {
 }
 
 BOOL WINAPI UpdateWindow(HWND h) {
-	log("UpdateWindow %p\n", (void*)h);
+	log("UpdateWindow %p\n", to_pointer(h));
 	window* w = get_window(h);
 	if (!h) {
 		kernel32::SetLastError(ERROR_INVALID_HANDLE);
@@ -734,7 +734,7 @@ BOOL WINAPI ReleaseCapture() {
 }
 
 BOOL WINAPI KillTimer(HWND wnd, UINT_PTR id) {
-	log("KillTimer %p %d\n", (void*)wnd, id);
+	log("KillTimer %p %d\n", to_pointer(wnd), id);
 	auto* w = get_window(focus_window);
 	if (!w) {
 		kernel32::SetLastError(ERROR_INVALID_HANDLE);
@@ -752,7 +752,7 @@ BOOL WINAPI KillTimer(HWND wnd, UINT_PTR id) {
 }
 
 UINT_PTR WINAPI SetTimer(HWND wnd, UINT_PTR id, UINT interval, TIMERPROC callback) {
-	log("SetTimer %p %d %d %p\n", (void*)wnd, id, interval, callback);
+	log("SetTimer %p %d %d %p\n", to_pointer(wnd), id, interval, callback);
 	if (!wnd) fatal_error("SetTimer with null HWND");
 	if (id == 0) fatal_error("SetTimer with id 0");
 	auto* w = get_window(focus_window);

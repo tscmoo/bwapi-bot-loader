@@ -66,8 +66,10 @@ struct file_io_impl {
 		else if (access == file_access::read_write) desired_access = GENERIC_READ | GENERIC_WRITE;
 		DWORD creation_disposition = OPEN_EXISTING;
 		if (mode == file_open_mode::open_existing) creation_disposition = OPEN_EXISTING;
-		if (mode == file_open_mode::create_new) creation_disposition = CREATE_NEW;
-		if (mode == file_open_mode::create_always) creation_disposition = CREATE_ALWAYS;
+		else if (mode == file_open_mode::create_new) creation_disposition = CREATE_NEW;
+		else if (mode == file_open_mode::create_always) creation_disposition = CREATE_ALWAYS;
+		else if (mode == file_open_mode::open_always) creation_disposition = OPEN_ALWAYS;
+		else if (mode == file_open_mode::truncate_existing) creation_disposition = TRUNCATE_EXISTING;
 		h = CreateFileA(fn, desired_access, FILE_SHARE_READ, nullptr, creation_disposition, 0, nullptr);
 		return h != INVALID_HANDLE_VALUE;
 	}
@@ -265,8 +267,10 @@ struct file_io_impl {
 		if (access == file_access::read) flags |= O_RDONLY;
 		else if (access == file_access::read_write) flags |= O_RDWR;
 		if (mode == file_open_mode::open_existing) flags |= 0;
-		if (mode == file_open_mode::create_new) flags |= O_CREAT | O_EXCL;
-		if (mode == file_open_mode::create_always) flags |= O_CREAT | O_TRUNC;
+		else if (mode == file_open_mode::create_new) flags |= O_CREAT | O_EXCL;
+		else if (mode == file_open_mode::create_always) flags |= O_CREAT | O_TRUNC;
+		else if (mode == file_open_mode::open_always) flags |= O_CREAT;
+		else if (mode == file_open_mode::truncate_existing) flags |= O_TRUNC;
 		fd = open64(fn, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
 		return fd >= 0;
 	}
@@ -301,7 +305,7 @@ struct file_io_impl {
 		if (r < 0) r = 0;
 		return r;
 	}
-		uint64_t get_size() {
+	uint64_t get_size() {
 		uint64_t r = 0;
 		struct stat st;
 		if (fstat(fd, &st) == 0) {
@@ -328,14 +332,14 @@ struct directory_io_impl {
 		dir = opendir(fn);
 		if (dir) {
 			path = fn;
-			next();
+			return next();
 		}
-		return dir != nullptr;
+		return false;
 	}
 	bool next() {
 		dirent* res = nullptr;
 		if (readdir_r(dir, &ent.d, &res) == 0) {
-			return stat((path + ent.d.d_name).c_str(), &st) == 0;
+			return stat((path + "/" + ent.d.d_name).c_str(), &st) == 0;
 		}
 		return false;
 	}
@@ -368,7 +372,7 @@ bool delete_file(const char* path) {
 }
 
 bool create_directory(const char* path) {
-	return mkdir(path, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+	return mkdir(path, ACCESSPERMS) == 0;
 }
 
 template<typename T>

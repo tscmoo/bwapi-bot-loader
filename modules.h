@@ -45,6 +45,7 @@ namespace modules {
 	extern std::function<void()> pre_entry_callback;
 
 	module_info* load_main(const char* path, bool overwrite = false);
+	module_info* load_fake_main(const char* path, std::function<void()> entry);
 	module_info* load_fake_module(const char* name);
 
 	void call_thread_attach();

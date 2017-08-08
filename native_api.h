@@ -48,7 +48,9 @@ namespace native_api {
 	enum class file_open_mode {
 		open_existing,
 		create_new,
-		create_always
+		create_always,
+		open_always,
+		truncate_existing
 	};
 
 	enum class file_set_pos_origin {

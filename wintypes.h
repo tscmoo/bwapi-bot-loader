@@ -85,6 +85,13 @@ namespace wintypes {
 		if ((uintptr_t)r != (uintptr_t)ptr) fatal_error("to_pointer32: the pointer %p does not fit in 32 bits", ptr);
 		return r;
 	}
+	static void* to_pointer(pointer32_t ptr) {
+		return (void*)(uintptr_t)ptr;
+	}
+	template<typename T>
+	static T* to_pointer(pointer32_T<T> ptr) {
+		return (T*)(uintptr_t)ptr.value;
+	}
 
 	using HMODULE = pointer32_t;
 	using HANDLE = pointer32_t;
@@ -172,6 +179,27 @@ namespace wintypes {
 	struct FILETIME {
 		DWORD dwLowDateTime;
 		DWORD dwHighDateTime;
+	};
+	
+	struct SYSTEMTIME {
+		WORD wYear;
+		WORD wMonth;
+		WORD wDayOfWeek;
+		WORD wDay;
+		WORD wHour;
+		WORD wMinute;
+		WORD wSecond;
+		WORD wMilliseconds;
+	};
+	
+	struct TIME_ZONE_INFORMATION {
+		LONG Bias;
+		char16_t StandardName[32];
+		SYSTEMTIME StandardDate;
+		LONG StandardBias;
+		char16_t DaylightName[32];
+		SYSTEMTIME DaylightDate;
+		LONG DaylightBias;
 	};
 
 	struct IMAGE_DOS_HEADER {
@@ -308,8 +336,8 @@ namespace wintypes {
 	using STARTUPINFOW = STARTUPINFOT<char16_t>;
 
 	struct MEMORY_BASIC_INFORMATION {
-		pointer32_T<void*> BaseAddress;
-		pointer32_T<void*> AllocationBase;
+		pointer32_T<void> BaseAddress;
+		pointer32_T<void> AllocationBase;
 		DWORD AllocationProtect;
 		SIZE_T RegionSize;
 		DWORD State;
@@ -321,7 +349,7 @@ namespace wintypes {
 		DWORD ExceptionCode;
 		DWORD ExceptionFlags;
 		EXCEPTION_RECORD* ExceptionRecord;
-		pointer32_T<void*> ExceptionAddress;
+		pointer32_T<void> ExceptionAddress;
 		DWORD NumberParameters;
 		ULONG_PTR ExceptionInformation[15];
 	};
@@ -376,8 +404,8 @@ namespace wintypes {
 		WORD wProcessorArchitecture;
 		WORD wReserved;
 		DWORD dwPageSize;
-		pointer32_T<void*> lpMinimumApplicationAddress;
-		pointer32_T<void*> lpMaximumApplicationAddress;
+		pointer32_T<void> lpMinimumApplicationAddress;
+		pointer32_T<void> lpMaximumApplicationAddress;
 		DWORD_PTR dwActiveProcessorMask;
 		DWORD dwNumberOfProcessors;
 		DWORD dwProcessorType;
@@ -408,6 +436,19 @@ namespace wintypes {
 		DWORD dwReserved1;
 		char cFileName[260];
 		char cAlternateFileName[14];
+	};
+
+	struct WIN32_FIND_DATAW {
+		DWORD dwFileAttributes;
+		FILETIME ftCreationTime;
+		FILETIME ftLastAccessTime;
+		FILETIME ftLastWriteTime;
+		DWORD nFileSizeHigh;
+		DWORD nFileSizeLow;
+		DWORD dwReserved0;
+		DWORD dwReserved1;
+		char16_t cFileName[260];
+		char16_t cAlternateFileName[14];
 	};
 
 	struct RECT {

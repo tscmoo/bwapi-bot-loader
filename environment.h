@@ -11,10 +11,18 @@
 
 #include "strf.h"
 
+#if defined(__x86_64__) || defined(_M_X64)
+#define x86_64
+#endif
+
+#ifndef x86_64
 #ifdef _MSC_VER
 #define STDCALL __stdcall
 #else
 #define STDCALL __attribute__((stdcall))
+#endif
+#else
+#define STDCALL 
 #endif
 
 #define WINAPI STDCALL
@@ -48,16 +56,24 @@ static void fatal_error(const char* fmt, T&&... args) {
 // 	raw_ptr_value = (void*)ptr;
 // }
 
+template<typename T>
+void assert_32bit(T v) {
+	uintptr_t n = (uintptr_t)v;
+	if ((uintptr_t)(uint32_t)n != n) fatal_error("value %#x does not fit in 32 bits\n", n);
+}
+
 struct func_ptr {
 	void* raw_ptr_value;
 	template<typename R, typename... args_T>
 	func_ptr(R(*ptr)(args_T...)) {
 		raw_ptr_value = (void*)ptr;
 	}
+#ifndef x86_64
 	template<typename R, typename... args_T>
 	func_ptr(R(STDCALL*ptr)(args_T...)) {
 		raw_ptr_value = (void*)ptr;
 	}
+#endif
 };
 
 #define wtoa_function(func) environment::get_wide_function<decltype(&func), &func>(&func)
@@ -87,9 +103,9 @@ namespace environment {
 			func(arg);
 		}
 	};
-	void enter_thread(const std::function<void()>& f);
+	void enter_thread(const std::function<void()>& f, bool create_stack = true);
 	template<typename F>
-	void enter_thread(const F& f) {
+	void enter_thread(const F& f, bool create_stack = true) {
 		enter_thread(std::function<void()>([&]() {
 			f();
 		}));
@@ -104,6 +120,21 @@ namespace environment {
 	void add_oninit(std::function<void()>, bool has_initialized = false);
 
 	void cpuid(int function, int subfunction, uint32_t info[4]);
+	
+	struct TIB {
+		void* seh = nullptr;
+		void* stack_bot = nullptr;
+		void* stack_top = nullptr;
+		void* subsystem_tib = nullptr;
+		void* fiber_data = nullptr;
+		void* data_slot = nullptr;
+		void* this_tib = nullptr;
+		std::array<char, 0x100> filler;
+		void* old_fs_value = nullptr;
+		void* retaddr = nullptr;
+	};
+	
+	extern TIB*(*get_tib)();
 
 	template<typename T>
 	struct ansi_to_wide {

@@ -333,7 +333,7 @@ struct IDirectDraw7 {
 	}
 	// 20
 	static HRESULT STDCALL SetCooperativeLevel(IDirectDraw7* self, HWND wnd, DWORD flags) {
-		log("SetCooperativeLevel %p %#x\n", (void*)wnd, flags);
+		log("SetCooperativeLevel %p %#x\n", to_pointer(wnd), flags);
 		self->wnd = wnd;
 		return DD_OK;
 	}
