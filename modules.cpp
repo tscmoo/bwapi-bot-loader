@@ -48,9 +48,10 @@ struct virtual_memory_handle {
 
 void* const modules_start_addr = (void*)((uintptr_t)16 * 1024 * 1024);
 
-module_info* load_module(const char* path, bool overwrite) {
+module_info* load_module(const char* path, bool overwrite, bool path_is_native = false) {
 
 	auto native_path = get_native_path(path);
+	if (path_is_native) native_path = path;
 
 	native_api::file_io f;
 	if (!f.open(native_path.c_str(), native_api::file_access::read, native_api::file_open_mode::open_existing)) {
@@ -298,14 +299,14 @@ module_info* load_module(const char* path, bool overwrite) {
 std::recursive_mutex load_mut;
 std::list<std::pair<module_info*, bool>> dll_entries_to_call;
 bool is_loading = false;
-module_info* load_library(const char* path, bool is_load_time, bool fake_if_necessary) {
+module_info* load_library(const char* path, bool is_load_time, bool fake_if_necessary, bool path_is_native) {
 	std::lock_guard<std::recursive_mutex> l(load_mut);
 	auto filename = get_filename(path);
 	auto* i = get_module_info(filename.c_str());
 	if (i) return i;
 	bool was_loading = is_loading;
 	if (!was_loading) is_loading = true;
-	i = load_module(path, false);
+	i = load_module(path, false, path_is_native);
 	if (!i) {
 		if (fake_if_necessary) {
 			i = load_fake_module(path);

@@ -40,7 +40,7 @@ namespace modules {
 	module_info* get_module_info(const char* name);
 	module_info* get_module_info(void* base);
 
-	module_info* load_library(const char* path, bool is_load_time, bool fake_if_necessary);
+	module_info* load_library(const char* path, bool is_load_time, bool fake_if_necessary, bool path_is_native = false);
 
 	extern std::function<void()> pre_entry_callback;
 
