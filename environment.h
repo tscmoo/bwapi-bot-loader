@@ -108,7 +108,7 @@ namespace environment {
 	void enter_thread(const F& f, bool create_stack = true) {
 		enter_thread(std::function<void()>([&]() {
 			f();
-		}));
+		}), create_stack);
 	}
 
 	void add_func(const std::string& name, func_ptr func, bool has_initialized = false);
