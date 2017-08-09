@@ -338,8 +338,8 @@ struct directory_io_impl {
 	}
 	bool next() {
 		dirent* res = nullptr;
-		if (readdir_r(dir, &ent.d, &res) == 0 && res) {
-			return stat((path + "/" + ent.d.d_name).c_str(), &st) == 0;
+		while (readdir_r(dir, &ent.d, &res) == 0 && res) {
+			if (stat((path + "/" + ent.d.d_name).c_str(), &st) == 0) return true;
 		}
 		return false;
 	}
