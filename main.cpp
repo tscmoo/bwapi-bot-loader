@@ -16,30 +16,59 @@
 #include "native_api.h"
 #include "kernel32.h"
 
-char image_buffer[5 * 1024 * 1024];
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
 
-int main() {
+extern "C" void* LoadLibrary(const char* name) {
+	return wintypes::to_pointer(kernel32::LoadLibraryA(name));	
+}
 
+extern "C" void* GetProcAddress(void* module, const char* name) {
+	return kernel32::GetProcAddress(wintypes::to_pointer32(module), name);
+}
 
+static modules::module_info* mi = nullptr;
+
+extern "C" void loadDll(const char* path) {
+	
+	char test[1024 * 1024 * 4];
+	for (volatile char* ptr = test; ptr < test + sizeof(test); ptr += 0x1000) {
+		*ptr;
+	}
+	
 	environment::init();
 
-	void* base = (void*)0x400000;
-
-	size_t size = 1024 * 1024 * 3; // starcraft image is slightly less than 3MB
-
-	char* b = image_buffer;
-	char* e = b + sizeof(image_buffer);
-	if ((char*)base < b || (char*)base >= e || (char*)base + size < b || (char*)base + size >= e) {
-		log("error: image_buffer is [%p,%p), which does not contain [%p,%p).\n", b, e, base, (char*)base + size);
-		log("This image must be linked with base address 0x300000 and relocations stripped.\n");
-		return -1;
-	}
-	std::string module_filename = "StarCraft.exe";
-
-	kernel32::set_cmdline(module_filename);
-
-	auto* i = modules::load_main(module_filename.c_str(), true);
-	if (!i) fatal_error("failed to load %s", module_filename);
-
-	return 0;
+	modules::load_fake_main("main", [&]() {
+		mi = modules::load_library(path, true, false, true);
+		if (!mi) fatal_error("failed to load %s", path);
+	});
+	
 }
+
+void* game_ptr;
+
+extern "C" DLLEXPORT void gameInit(void* game) {
+	game_ptr = game;
+}
+extern "C" DLLEXPORT void* newAIModule() {
+	if (!mi) fatal_error("loadDll must be called before newAIModule");
+	
+	auto getf = [&](const char* name) {
+		auto i = mi->export_names.find(name);
+		if (i == mi->export_names.end() || i->second >= mi->exports.size()) fatal_error("'%s' does not have an exported function by name '%s'", mi->name, name);
+		return mi->exports[i->second];
+	};
+	
+	log("calling gameInit()\n");
+
+	((void(*)(void*))getf("gameInit"))(game_ptr);
+
+	auto* r = ((void*(*)())getf("newAIModule"))();
+	log("returning %p\n", r);
+
+	return r;
+}
+
