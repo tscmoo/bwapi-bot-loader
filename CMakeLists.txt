@@ -27,5 +27,3 @@ set_property(TARGET bwloader PROPERTY POSITION_INDEPENDENT_CODE ON)
 if (NOT MSVC)
 	set_target_properties(bwloader PROPERTIES COMPILE_FLAGS "-m32" LINK_FLAGS "-m32")
 endif()
-
-target_link_libraries(bwloader BWAPILIB)
