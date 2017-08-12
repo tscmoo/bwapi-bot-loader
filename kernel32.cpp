@@ -1245,6 +1245,18 @@ BOOL WINAPI FreeEnvironmentStringsW(int16_t*) {
 	return TRUE;
 }
 
+DWORD WINAPI GetEnvironmentVariableA(const char* name, char* buf, DWORD bufsize) {
+	if (bufsize) *buf = 0;
+	SetLastError(ERROR_ENVVAR_NOT_FOUND);
+	return 0;
+}
+
+DWORD WINAPI GetEnvironmentVariableW(const char* name, char* buf, DWORD bufsize) {
+	if (bufsize) *buf = 0;
+	SetLastError(ERROR_ENVVAR_NOT_FOUND);
+	return 0;
+}
+
 UINT WINAPI GetACP() {
 	return 65001;
 }
@@ -1868,7 +1880,20 @@ DWORD WINAPI GetFileSize(HANDLE h, DWORD* size_high) {
 }
 
 LONG WINAPI InterlockedIncrement(LONG* value) {
-	return native_api::fetch_add(value) + 1;
+	return native_api::fetch_increment(value) + 1;
+}
+
+LONG WINAPI InterlockedDecrement(LONG* value) {
+	return native_api::fetch_decrement(value) - 1;
+}
+
+LONG WINAPI InterlockedExchange(LONG* value, LONG new_value) {
+	return native_api::exchange(value, new_value);
+}
+
+LONG WINAPI InterlockedCompareExchange(LONG* value, LONG new_value, LONG compare) {
+	native_api::compare_exchange(value, compare, new_value);
+	return compare;
 }
 
 HANDLE WINAPI GetProcessHeap() {
@@ -2638,6 +2663,8 @@ register_funcs funcs("kernel32", {
 	{ "GetCommandLineW", GetCommandLineW },
 	{ "GetEnvironmentStringsW", GetEnvironmentStringsW },
 	{ "FreeEnvironmentStringsW", FreeEnvironmentStringsW },
+	{ "GetEnvironmentVariableA", GetEnvironmentVariableA },
+	{ "GetEnvironmentVariableW", GetEnvironmentVariableW },
 	{ "WideCharToMultiByte", WideCharToMultiByte },
 	{ "MultiByteToWideChar", MultiByteToWideChar },
 	{ "GetACP", GetACP },
@@ -2680,6 +2707,9 @@ register_funcs funcs("kernel32", {
 	{ "WriteFile", WriteFile },
 	{ "GetFileSize", GetFileSize },
 	{ "InterlockedIncrement", InterlockedIncrement },
+	{ "InterlockedDecrement", InterlockedDecrement },
+	{ "InterlockedExchange", InterlockedExchange },
+	{ "InterlockedCompareExchange", InterlockedCompareExchange },
 	{ "GetProcessHeap", GetProcessHeap },
 	{ "FindFirstFileA", FindFirstFileA },
 	{ "FindNextFileA", FindNextFileA },
