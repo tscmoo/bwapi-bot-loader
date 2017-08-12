@@ -56,19 +56,29 @@ extern "C" DLLEXPORT void gameInit(void* game) {
 extern "C" DLLEXPORT void* newAIModule() {
 	if (!mi) fatal_error("loadDll must be called before newAIModule");
 	
-	auto getf = [&](const char* name) {
+	auto getf = [&](const char* name, bool error) {
 		auto i = mi->export_names.find(name);
-		if (i == mi->export_names.end() || i->second >= mi->exports.size()) fatal_error("'%s' does not have an exported function by name '%s'", mi->name, name);
+		if (i == mi->export_names.end() || i->second >= mi->exports.size()) {
+			if (!error) return (void*)nullptr;
+			fatal_error("'%s' does not have an exported function by name '%s'", mi->name, name);
+		}
 		return mi->exports[i->second];
 	};
 	
 	log("calling gameInit()\n");
 
-	((void(*)(void*))getf("gameInit"))(game_ptr);
-
-	auto* r = ((void*(*)())getf("newAIModule"))();
-	log("returning %p\n", r);
-
-	return r;
+	if (getf("gameInit", false)) {
+		((void(*)(void*))getf("gameInit", true))(game_ptr);
+	
+		auto* r = ((void*(*)())getf("newAIModule", true))();
+		log("returning %p\n", r);
+	
+		return r;
+	} else {
+		auto* r = ((void*(*)(void*))getf("newAIModule", true))(game_ptr);
+		log("returning %p\n", r);
+	
+		return r;
+	}
 }
 
