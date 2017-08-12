@@ -104,8 +104,12 @@ namespace native_api {
 	bool delete_file(const char* path);
 	bool create_directory(const char* path);
 
-	int32_t fetch_add(int32_t*);
+	int32_t fetch_increment(int32_t*);
+	int32_t fetch_decrement(int32_t*);
 	bool compare_exchange(int64_t* pointer, int64_t& expected, int64_t desired);
+	bool compare_exchange(int32_t* pointer, int32_t& expected, int32_t desired);
+	bool exchange(int64_t* pointer, int64_t desired);
+	bool exchange(int32_t* pointer, int32_t desired);
 
 	template<size_t size, size_t alignment> struct atomic_type;
 	template<size_t alignment>

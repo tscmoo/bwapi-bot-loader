@@ -157,12 +157,21 @@ bool create_directory(const char* path) {
 }
 
 template<typename T, typename std::enable_if<sizeof(T) == sizeof(long)>::type* = nullptr>
-T fetch_add(T* ptr) {
+T fetch_increment(T* ptr) {
 	return _InterlockedIncrement((long*)ptr) - 1;
 }
 
-int32_t fetch_add(int32_t* ptr) {
-	return fetch_add<int32_t>(ptr);
+int32_t fetch_increment(int32_t* ptr) {
+	return fetch_increment<int32_t>(ptr);
+}
+
+template<typename T, typename std::enable_if<sizeof(T) == sizeof(long)>::type* = nullptr>
+T fetch_decrement(T* ptr) {
+	return _InterlockedDecrement((long*)ptr) - 1;
+}
+
+int32_t fetch_decrement(int32_t* ptr) {
+	return fetch_decrement<int32_t>(ptr);
 }
 
 template<typename T, typename std::enable_if<sizeof(T) == sizeof(long)>::type* = nullptr>
@@ -182,6 +191,24 @@ bool compare_exchange(int32_t* ptr, int32_t& expected, int32_t desired) {
 }
 
 bool compare_exchange(int64_t* ptr, int64_t& expected, int64_t desired) {
+	return compare_exchange_impl<int64_t>(ptr, expected, desired);
+}
+
+template<typename T, typename std::enable_if<sizeof(T) == sizeof(long)>::type* = nullptr>
+T exchange_impl(T* ptr, T desired) {
+	return _InterlockedExchange((long*)ptr, (long)expected);
+}
+
+template<typename T, typename std::enable_if<sizeof(T) == sizeof(long long)>::type* = nullptr>
+T exchange_impl(T* ptr, T desired) {
+	return _InterlockedExchange((long long*)ptr, (long long)expected);
+}
+
+bool exchange(int32_t* ptr, int32_t desired) {
+	return compare_exchange_impl<int32_t>(ptr, expected, desired);
+}
+
+bool exchange(int64_t* ptr, int64_t desired) {
 	return compare_exchange_impl<int64_t>(ptr, expected, desired);
 }
 
@@ -376,12 +403,21 @@ bool create_directory(const char* path) {
 }
 
 template<typename T>
-T fetch_add(T* ptr) {
+T fetch_increment(T* ptr) {
 	return __sync_fetch_and_add(ptr, 1);
 }
 
-int32_t fetch_add(int32_t* ptr) {
-	return fetch_add<int32_t>(ptr);
+int32_t fetch_increment(int32_t* ptr) {
+	return fetch_increment<int32_t>(ptr);
+}
+
+template<typename T>
+T fetch_decrement(T* ptr) {
+	return __sync_fetch_and_sub(ptr, 1);
+}
+
+int32_t fetch_decrement(int32_t* ptr) {
+	return fetch_decrement<int32_t>(ptr);
 }
 
 template<typename T>
@@ -397,6 +433,19 @@ bool compare_exchange(int32_t* ptr, int32_t& expected, int32_t desired) {
 
 bool compare_exchange(int64_t* ptr, int64_t& expected, int64_t desired) {
 	return compare_exchange_impl<int64_t>(ptr, expected, desired);
+}
+
+template<typename T>
+T exchange_impl(T* ptr, T desired) {
+	return __sync_lock_test_and_set(ptr, desired);
+}
+
+bool exchange(int32_t* ptr, int32_t desired) {
+	return exchange_impl<int32_t>(ptr, desired);
+}
+
+bool exchange(int64_t* ptr, int64_t desired) {
+	return exchange_impl<int64_t>(ptr, desired);
 }
 
 
