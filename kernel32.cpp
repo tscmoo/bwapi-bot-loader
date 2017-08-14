@@ -1350,6 +1350,11 @@ BOOL WINAPI FileTimeToSystemTime(const FILETIME* time, SYSTEMTIME* out) {
 	return TRUE;
 }
 
+BOOL WINAPI FileTimeToLocalFileTime(const FILETIME* time, FILETIME* out) {
+	*out = *time;
+	return TRUE;
+}
+
 BOOL WINAPI SystemTimeToTzSpecificLocalTime(void* timezone, const SYSTEMTIME* in, SYSTEMTIME* out) {
 	*out = *in;
 	return TRUE;
@@ -2670,6 +2675,7 @@ register_funcs funcs("kernel32", {
 	{ "IsProcessorFeaturePresent", IsProcessorFeaturePresent },
 	{ "GetSystemTimeAsFileTime", GetSystemTimeAsFileTime },
 	{ "FileTimeToSystemTime", FileTimeToSystemTime },
+	{ "FileTimeToLocalFileTime", FileTimeToLocalFileTime },
 	{ "SystemTimeToTzSpecificLocalTime", SystemTimeToTzSpecificLocalTime },
 	{ "GetTimeZoneInformation", GetTimeZoneInformation },
 	{ "GetCurrentProcessId", GetCurrentProcessId },
