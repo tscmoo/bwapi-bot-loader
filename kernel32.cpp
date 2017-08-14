@@ -564,25 +564,32 @@ void WINAPI LeaveCriticalSection(CRITICAL_SECTION* cs) {
 	((std::recursive_mutex*)to_pointer(cs->LockSemaphore))->unlock();
 }
 
-struct local_storage {
+struct local_storage_register {
 	struct index {
 		std::atomic<bool> busy { false };
-		void* data;
-		void* callback;
+		void* callback = nullptr;
 	};
 	std::vector<index> ls = std::vector<index>(1088);
 	std::atomic<size_t> next_index;
+};
 
-	index& operator[](size_t index) {
+struct local_storage {
+	std::vector<void*> ls = std::vector<void*>(1088);
+	
+	local_storage_register& reg;
+	
+	local_storage(local_storage_register& reg) : reg(reg) {}
+
+	void*& operator[](size_t index) {
 		return ls[index];
 	}
 
 	size_t get_next_index() {
-		size_t index = next_index.load(std::memory_order_relaxed);
+		size_t index = reg.next_index.load(std::memory_order_relaxed);
 		if (index >= ls.size()) {
 			return 0xffffffff;
 		}
-		while (!next_index.compare_exchange_weak(index, index + 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
+		while (!reg.next_index.compare_exchange_weak(index, index + 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
 			if (index >= ls.size()) {
 				return 0xffffffff;
 			}
@@ -592,9 +599,9 @@ struct local_storage {
 
 	size_t get_free_index() {
 		auto take = [&](size_t index) {
-			bool was_busy = ls[index].busy.load(std::memory_order_relaxed);
+			bool was_busy = reg.ls[index].busy.load(std::memory_order_relaxed);
 			if (was_busy) return false;
-			return ls[index].busy.compare_exchange_weak(was_busy, true, std::memory_order_relaxed, std::memory_order_relaxed);
+			return reg.ls[index].busy.compare_exchange_weak(was_busy, true, std::memory_order_relaxed, std::memory_order_relaxed);
 		};
 		size_t index = get_next_index();
 		while (index < ls.size()) {
@@ -608,84 +615,84 @@ struct local_storage {
 	}
 };
 
-thread_local local_storage fls;
+local_storage_register fls_reg;
+thread_local local_storage fls(fls_reg);
 
 DWORD WINAPI FlsAlloc(void* callback) {
 	size_t index = fls.get_free_index();
 	if (index == 0xffffffff) return 0xffffffff;
-	fls[index].callback = callback;
-	fls[index].data = nullptr;
-	//log("FlsAlloc -> %d\n", index);
+	fls.reg.ls[index].callback = callback;
+	log("FlsAlloc -> %d\n", index);
 	return index;
 }
 
 BOOL WINAPI FlsFree(DWORD index) {
-	if (index >= fls.next_index || !fls[index].busy) {
+	if (index >= fls.reg.next_index || !fls.reg.ls[index].busy) {
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	fls[index].busy = false;
+	fls.reg.ls[index].busy = false;
 	return TRUE;
 }
 
 BOOL WINAPI FlsSetValue(DWORD index, void* data) {
-	if (index >= fls.next_index || !fls[index].busy) {
+	if (index >= fls.reg.next_index || !fls.reg.ls[index].busy) {
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	fls[index].data = data;
+	fls[index] = data;
 	//log("FlsSetValue %d -> %p\n", index, data);
 	return TRUE;
 }
 
 void* WINAPI FlsGetValue(DWORD index) {
-	if (index >= fls.next_index || !fls[index].busy) {
+	if (index >= fls.reg.next_index || !fls.reg.ls[index].busy) {
 		SetLastError(ERROR_INVALID_PARAMETER);
 		//log("FlsGetValue failed\n");
 		return nullptr;
 	}
 	//log("FlsGetValue %d -> %p\n", index, fls[index].data);
-	return fls[index].data;
+	return fls[index];
 }
 
-thread_local local_storage tls;
+local_storage_register tls_reg;
+thread_local local_storage tls(tls_reg);
 
 DWORD WINAPI TlsAlloc() {
 	size_t index = tls.get_free_index();
 	if (index == 0xffffffff) return 0xffffffff;
-	tls[index].callback = nullptr;
-	tls[index].data = nullptr;
+	tls.reg.ls[index].callback = nullptr;
 	//log("TlsAlloc -> %d\n", index);
 	return index;
 }
 
 BOOL WINAPI TlsFree(DWORD index) {
-	if (index >= tls.next_index || !tls[index].busy) {
+	if (index >= tls.reg.next_index || !tls.reg.ls[index].busy) {
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	tls[index].busy = false;
+	tls.reg.ls[index].busy = false;
 	return TRUE;
 }
 
 BOOL WINAPI TlsSetValue(DWORD index, void* data) {
-	if (index >= tls.next_index || !tls[index].busy) {
+	if (index >= tls.reg.next_index || !tls.reg.ls[index].busy) {
 		SetLastError(ERROR_INVALID_PARAMETER);
 		return FALSE;
 	}
-	tls[index].data = data;
+	tls[index] = data;
 	//log("TlsSetValue %d -> %p\n", index, data);
 	return TRUE;
 }
 
 void* WINAPI TlsGetValue(DWORD index) {
-	if (index >= tls.next_index || !tls[index].busy) {
+	if (index >= tls.reg.next_index || !tls.reg.ls[index].busy) {
 		SetLastError(ERROR_INVALID_PARAMETER);
 		//log("TlsGetValue failed\n");
 		return nullptr;
 	}
 	//log("TlsGetValue %d -> %p\n", index, tls[index].data);
-	return tls[index].data;
+	return tls[index];
 }
 
 DWORD WINAPI GetModuleFileNameA(HMODULE hm, char* dst, DWORD size) {
@@ -934,12 +941,6 @@ void* virtual_allocate_nolock(void* addr, size_t size, MEM_STATE allocation_type
 // 	for (auto& v : virtual_regions) {
 // 		log(" [%p, %p)\n", v.second.base, (uint8_t*)v.second.base + v.second.size);
 // 	}
-	if (ptr && (protect == PAGE_READONLY || protect == PAGE_READWRITE)) {
-		for (size_t i = 0; i < size; ++i) {
-			char* p = (char*)ptr;
-			if (p[i]) fatal_error("waa");
-		}
-	}
 	return ptr;
 }
 void virtual_deallocate_nolock(virtual_region* r) {
@@ -1577,6 +1578,7 @@ HANDLE WINAPI CreateThread(void* security_attributes, SIZE_T stack_size, void* s
 			modules::call_thread_detach();
 			tlb.current_thread_handle = nullptr;
 			t->running = false;
+			t->thread_obj.detach();
 		});
 	});
 	if (thread_id) *thread_id = t->id;
