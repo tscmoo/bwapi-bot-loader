@@ -298,7 +298,7 @@ struct file_io_impl {
 		else if (mode == file_open_mode::create_always) flags |= O_CREAT | O_TRUNC;
 		else if (mode == file_open_mode::open_always) flags |= O_CREAT;
 		else if (mode == file_open_mode::truncate_existing) flags |= O_TRUNC;
-		fd = open64(fn, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+		fd = ::open(fn, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
 		return fd >= 0;
 	}
 	bool read(void* buffer, size_t size, size_t* out_read) {
@@ -323,12 +323,12 @@ struct file_io_impl {
 		int whence = SEEK_SET;
 		if (origin == file_set_pos_origin::current) whence = SEEK_CUR;
 		if (origin == file_set_pos_origin::end) whence = SEEK_END;
-		auto r = lseek64(fd, pos, whence);
+		auto r = lseek(fd, pos, whence);
 		if (r < 0) r = 0;
 		return r;
 	}
 	uint64_t get_pos() {
-		auto r = lseek64(fd, 0, SEEK_CUR);
+		auto r = lseek(fd, 0, SEEK_CUR);
 		if (r < 0) r = 0;
 		return r;
 	}
