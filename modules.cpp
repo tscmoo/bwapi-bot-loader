@@ -445,6 +445,8 @@ module_info* load_fake_module(const char* name) {
 
 	addr_handle.ptr = nullptr;
 
+	if (loaded_modules.size() == 1) kernel32::set_main_module(r);
+
 	log("loaded fake module '%s' at %p\n", name, r->base);
 
 	return r;
