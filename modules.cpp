@@ -429,7 +429,7 @@ module_info* load_fake_module(const char* name) {
 	auto* r = &loaded_modules.back();
 
 	virtual_memory_handle addr_handle;
-	addr_handle.ptr = kernel32::virtual_allocate(nullptr, 0x10000, MEM_RESERVE, PAGE_NOACCESS, modules_start_addr);
+	addr_handle.ptr = kernel32::virtual_allocate(nullptr, 0x10000, MEM_COMMIT, PAGE_READONLY, modules_start_addr);
 	if (!addr_handle.ptr) fatal_error("failed to allocate memory for fake module");
 
 	r->name = name;
