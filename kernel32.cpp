@@ -925,7 +925,6 @@ void* virtual_allocate_nolock(void* addr, size_t size, MEM_STATE allocation_type
 			if (!mem) search(vm_begin_addr, next_addr);
 			if (mem) next_addr = (uintptr_t)mem.ptr + size;
 		}
-		//fatal_error("stop");
 	}
 	if (!mem) return nullptr;
 	void* ptr = mem.detach();
@@ -2250,7 +2249,6 @@ BOOL WINAPI CloseHandle(HANDLE h) {
 		SetLastError(ERROR_INVALID_HANDLE);
 		return FALSE;
 	}
-	if (o->object_type == object::t_mutex) fatal_error("stop");
 	handle_container* c;
 	size_t index;
 	std::tie(c, index) = container_and_index_for_HANDLE(h);
