@@ -32,12 +32,16 @@ extern "C" void* GetProcAddress(void* module, const char* name) {
 
 static modules::module_info* mi = nullptr;
 
-extern "C" void loadDll(const char* path) {
-	
-	char test[1024 * 1024 * 4];
+void stack_probe() {
+  char test[1024 * 1024 * 4];
 	for (volatile char* ptr = test; ptr < test + sizeof(test); ptr += 0x1000) {
 		*ptr;
 	}
+}
+
+extern "C" void loadDll(const char* path) {
+	
+	stack_probe();
 	
 	environment::init();
 
