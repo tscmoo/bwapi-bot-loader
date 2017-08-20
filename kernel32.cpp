@@ -1803,7 +1803,7 @@ DWORD WINAPI SetFilePointer(HANDLE h, LONG move, LONG* move_high, MOVE_METHOD me
 	uint64_t pos;
 	if (move_high) {
 		pos = (ULONG)move;
-		pos |= (uint64_t)move_high << 32;
+		pos |= (uint64_t)*move_high << 32;
 	} else pos = move;
 	SetLastError(ERROR_SUCCESS);
 	return (DWORD)o->set_pos(pos, method);
