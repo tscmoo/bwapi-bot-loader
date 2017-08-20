@@ -281,6 +281,19 @@ bool set_memory_access(void* ptr, size_t size, memory_access access) {
 	return mprotect(ptr, size, protect) == 0;
 }
 
+std::string get_file_path(const char* path, int max_depth = 10) {
+	if (max_depth <= 0) return path;
+	struct stat st;
+	if (stat(path, &st) != 0) return path;
+	if (!S_ISLNK(st.st_mode)) return path;
+	std::string r;
+	r.resize(st.st_size);
+	auto n = ::readlink(path, (char*)r.data(), r.size());
+	if (n == -1 || n == 0) return path;
+	r.resize(n);
+	return get_file_path(r.c_str(), max_depth - 1);
+}
+
 struct file_io_impl {
 	int fd;
 	file_io_impl() {
@@ -298,7 +311,7 @@ struct file_io_impl {
 		else if (mode == file_open_mode::create_always) flags |= O_CREAT | O_TRUNC;
 		else if (mode == file_open_mode::open_always) flags |= O_CREAT;
 		else if (mode == file_open_mode::truncate_existing) flags |= O_TRUNC;
-		fd = open64(fn, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+		fd = open64(get_file_path(fn).c_str(), flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
 		return fd >= 0;
 	}
 	bool read(void* buffer, size_t size, size_t* out_read) {
@@ -356,11 +369,9 @@ struct directory_io_impl {
 		if (dir) closedir(dir);
 	}
 	bool open(const char* fn) {
-		dir = opendir(fn);
-		if (dir) {
-			path = fn;
-			return next();
-		}
+		path = get_file_path(fn);
+		dir = opendir(path.c_str());
+		if (dir) return next();
 		return false;
 	}
 	bool next() {
