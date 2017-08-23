@@ -1552,6 +1552,13 @@ void enter_main_thread(const std::function<void()>& f) {
 	main_thread_handle = std::move(t);
 }
 
+void stack_probe() {
+	char test[1024 * 1024 * 4];
+	for (volatile char* ptr = test; ptr < test + sizeof(test); ptr += 0x1000) {
+		*ptr;
+	}
+}
+
 HANDLE WINAPI CreateThread(void* security_attributes, SIZE_T stack_size, void* start_address, void* parameter, DWORD creation_flags, DWORD* thread_id) {
 	if (creation_flags & 4) {
 		SetLastError(ERROR_NOT_SUPPORTED);
@@ -1567,6 +1574,7 @@ HANDLE WINAPI CreateThread(void* security_attributes, SIZE_T stack_size, void* s
 	log("created a new thread with id %d\n", t->id);
 	t->thread_obj = std::thread([t = std::move(t2), start_address, parameter]() mutable {
 		environment::enter_thread([t = std::move(t), start_address, parameter]() {
+			stack_probe();
 			tlb.thread_id = t->id;
 			tlb.current_thread = &*t;
 			tlb.current_thread_handle = &t;
@@ -1579,7 +1587,7 @@ HANDLE WINAPI CreateThread(void* security_attributes, SIZE_T stack_size, void* s
 			tlb.current_thread_handle = nullptr;
 			t->running = false;
 			t->thread_obj.detach();
-		});
+		}, false);
 	});
 	if (thread_id) *thread_id = t->id;
 	std::atomic_thread_fence(std::memory_order_release);
