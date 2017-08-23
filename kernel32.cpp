@@ -1581,7 +1581,7 @@ HANDLE WINAPI CreateThread(void* security_attributes, SIZE_T stack_size, void* s
 			log("thread running, yey\n");
 			modules::call_thread_attach();
 			log("calling thread entry point at %p\n", start_address);
-			t->exit_code = ((DWORD(WINAPI*)(void*))start_address)(parameter);
+			t->exit_code = environment::call_thread_entry(start_address, parameter);
 			t->exit_time = std::chrono::system_clock::now();
 			modules::call_thread_detach();
 			tlb.current_thread_handle = nullptr;

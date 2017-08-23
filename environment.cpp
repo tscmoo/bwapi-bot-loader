@@ -30,7 +30,7 @@ void generate_get_tib(uint8_t*& p) {
 	*p++ = 0xa1;
 	*(uint32_t*)p = 0x18;
 	p += 4;
-	
+
 	*p++ = 0xc3; // ret
 }
 void generate_set_fs(uint8_t*& p) {
@@ -66,6 +66,18 @@ void generate_cpuid(uint8_t*& p) {
 	p += 0x1e;
 }
 
+uint32_t(*call_thread_entry_f)(void* entry, void* arg);
+
+uint32_t call_thread_entry(void* entry, void* arg) {
+	return call_thread_entry_f(entry, arg);
+}
+
+void generate_call_thread_entry(uint8_t*& p) {
+	const char* code = "\x55\x8b\xec\x8b\x45\x08\x8b\x4d\x0c\x83\xec\x70\x51\xff\xd0\x89\xec\x5d\xc3";
+	memcpy(p, code, 0x13);
+	p += 0x13;
+}
+
 void enter_thread(const std::function<void()>& f, bool create_stack) {
 #ifndef _WIN32
 	user_desc ldt = { (unsigned int)-1, (unsigned int)&tib, 0xfff, 1, 0, 0, 1, 0, 1 };
@@ -74,7 +86,7 @@ void enter_thread(const std::function<void()>& f, bool create_stack) {
 	set_fs((ldt.entry_number << 3) | 3);
 	tib.this_tib = &tib;
 #endif
-	
+
 	if (!create_stack) {
 		f();
 		return;
@@ -123,6 +135,9 @@ void init() {
 	while ((uintptr_t)p % 4) ++p;
 	(void*&)cpuid_f = p;
 	generate_cpuid(p);
+	while ((uintptr_t)p % 4) ++p;
+	(void*&)call_thread_entry_f = p;
+	generate_call_thread_entry(p);
 
 	add_oninit(nullptr, true);
 	call_oninit_funcs();

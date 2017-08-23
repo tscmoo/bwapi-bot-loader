@@ -22,7 +22,7 @@
 #define STDCALL __attribute__((stdcall))
 #endif
 #else
-#define STDCALL 
+#define STDCALL
 #endif
 
 #define WINAPI STDCALL
@@ -120,7 +120,9 @@ namespace environment {
 	void add_oninit(std::function<void()>, bool has_initialized = false);
 
 	void cpuid(int function, int subfunction, uint32_t info[4]);
-	
+
+	uint32_t call_thread_entry(void* entry, void* arg);
+
 	struct TIB {
 		void* seh = nullptr;
 		void* stack_bot = nullptr;
@@ -133,7 +135,7 @@ namespace environment {
 		void* old_fs_value = nullptr;
 		void* retaddr = nullptr;
 	};
-	
+
 	extern TIB*(*get_tib)();
 
 	template<typename T>
