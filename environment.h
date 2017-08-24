@@ -39,15 +39,22 @@ namespace kernel32 {
 };
 
 template<typename...T>
-static void log(const char* fmt, T&&...args) {
+static void log_impl(const char* fmt, T&&...args) {
 	auto s = format(fmt, std::forward<T>(args)...);
 	auto s2 = format("%04x: %s", kernel32::GetCurrentThreadId(), s);
 	fwrite(s2.data(), s2.size(), 1, stdout);
 }
 
 template<typename...T>
+static void log(const char* fmt, T&&...args) {
+#ifdef LOG_ENABLED
+	log_impl(fmt, std::forward<T>(args)...);
+#endif
+}
+
+template<typename...T>
 static void fatal_error(const char* fmt, T&&... args) {
-	log("fatal error: %s\n", format(fmt, std::forward<T>(args)...));
+	log_impl("fatal error: %s\n", format(fmt, std::forward<T>(args)...));
 	std::quick_exit(-1);
 }
 
